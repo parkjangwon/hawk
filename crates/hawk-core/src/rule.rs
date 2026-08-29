@@ -77,7 +77,7 @@ fn location(node: &AstNode<'_>) -> SourceLocation {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct RuleRegistry {
     rules: Vec<Box<dyn Rule + Send + Sync>>,
 }
@@ -89,7 +89,7 @@ impl RuleRegistry {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &dyn Rule> {
+    pub fn iter(&self) -> impl Iterator<Item = &(dyn Rule + Send + Sync)> {
         self.rules.iter().map(Box::as_ref)
     }
 }

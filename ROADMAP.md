@@ -56,13 +56,13 @@ Report / Output
 - [x] Multiple path arguments.
 - [x] Recursive file discovery.
 - [x] Default ignore directories.
-- [ ] Language detection.
+- [x] Language detection.
 - [x] Java parser integration.
 - [x] Initial AST representation/adapters.
-- [ ] Basic pattern rules.
+- [x] Basic pattern rules.
 - [x] Basic AST rules.
 - [x] Severity levels: Critical / High / Medium / Low / Info.
-- [ ] Finding Model.
+- [x] Finding Model.
 - [ ] Useful terminal reporter.
 - [ ] Exit codes suitable for automation.
 
