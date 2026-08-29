@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hawk_core::scope::{resolve, ScanTarget, ScopeError};
+
+static SEQ: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir {
     path: std::path::PathBuf,
@@ -10,11 +13,15 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> Self {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after UNIX_EPOCH")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("hawk-scope-test-{suffix}"));
+        let path = std::env::temp_dir().join(format!(
+            "hawk-scope-test-{}-{suffix}-{seq}",
+            std::process::id()
+        ));
         fs::create_dir(&path).expect("temporary directory should be created");
         Self { path }
     }
