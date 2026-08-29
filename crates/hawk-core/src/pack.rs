@@ -679,6 +679,27 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                 include_str!("../rules/go/go.security.exec-command.rule.toml"),
             )],
         ),
+        (
+            include_str!("../rules/korea/pack.toml"),
+            &[
+                (
+                    "built-in:rules/korea/korea.java.hardcoded-password.rule.toml",
+                    include_str!("../rules/korea/korea.java.hardcoded-password.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.java.weak-random.rule.toml",
+                    include_str!("../rules/korea/korea.java.weak-random.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.java.stacktrace-public.rule.toml",
+                    include_str!("../rules/korea/korea.java.stacktrace-public.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.java.hardcoded-key.rule.toml",
+                    include_str!("../rules/korea/korea.java.hardcoded-key.rule.toml"),
+                ),
+            ],
+        ),
     ];
 
     let mut loaded = Vec::with_capacity(packs.len());

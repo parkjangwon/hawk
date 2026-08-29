@@ -1,0 +1,13 @@
+id = "korea.java.weak-random"
+name = "Use of weak random generation"
+description = "java.util.Random and Math.random are not cryptographically secure and must not be used for security decisions (e.g. tokens, passwords, salt)."
+recommendation = "Use SecureRandom for security-sensitive values."
+category = "weak-crypto"
+severity = "medium"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-330"
+owasp = "A02:2021"
+
+[pattern]
+regex = "new\\s+java\\.util\\.Random\\s*\\(|Math\\.random\\s*\\(|new\\s+Random\\s*\\("

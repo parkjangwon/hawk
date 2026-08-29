@@ -1,0 +1,13 @@
+id = "korea.java.hardcoded-key"
+name = "Hardcoded cryptographic key"
+description = "Embedding secret encryption/decryption keys in code makes the cryptography ineffective and violates the secure-coding requirement that keys be managed separately."
+recommendation = "Derive or obtain keys from a secure key store / KMS at runtime; never embed raw key material in source."
+category = "hardcoded-credentials"
+severity = "high"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-321"
+owasp = "A02:2021"
+
+[pattern]
+regex = "\\bKey\\s*[=:]\\s*[\"'][A-Za-z0-9+/=]{16,}[\"']|secret\\s*=\\s*[\"'][A-Za-z0-9+/=]{16,}[\"']"

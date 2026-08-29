@@ -1,0 +1,4 @@
+name = "korea-secure-coding"
+version = "1.0.0"
+description = "Hawk rule pack aligned with Korean secure-coding guidance (Java-focused). Independent Hawk rule IDs; mappings to standards are by reference and imply no certification."
+authors = ["Hawk Contributors"]

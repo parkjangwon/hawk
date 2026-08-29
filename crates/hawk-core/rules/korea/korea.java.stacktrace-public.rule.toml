@@ -1,0 +1,13 @@
+id = "korea.java.stacktrace-public"
+name = "Stack trace leaked in HTTP response"
+description = "Writing exception stack traces directly to the HTTP response leaks internal call-stack details to clients, aiding reconnaissance; Korean guidance forbids exposing internal error details."
+recommendation = "Log the stack trace server-side and return a generic user-facing error; do not write printStackTrace output to the response."
+category = "information-disclosure"
+severity = "medium"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-209"
+owasp = "A01:2021"
+
+[pattern]
+regex = "printStackTrace\\s*\\(\\s*\\)|e\\.getMessage\\(\\s*\\)\\s*\\+\\s*response|response\\.sendError\\(\\s*\\d+"
