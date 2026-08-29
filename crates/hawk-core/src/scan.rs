@@ -10,7 +10,7 @@ use crate::{
     scope::{resolve, ScanTarget, ScopeError},
 };
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Scanner {
     parsers: ParserRegistry,
     rules: RuleRegistry,
@@ -96,7 +96,12 @@ pub enum ScanError {
 impl std::fmt::Display for ScanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Scope(error) => error.fmt(f),
+            Self::Scope(error) => match error {
+                ScopeError::PathNotFound(path) => write!(f, "path not found: {}", path.display()),
+                ScopeError::MetadataUnavailable { path } => {
+                    write!(f, "unable to determine path type: {}", path.display())
+                }
+            },
             Self::Discovery(error) => error.fmt(f),
             Self::ReadSource { path, source } => {
                 write!(f, "unable to read source '{}': {source}", path.display())

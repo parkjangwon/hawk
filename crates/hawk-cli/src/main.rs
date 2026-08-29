@@ -34,7 +34,14 @@ where
 
     let paths: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let refs: Vec<_> = paths.iter().map(PathBuf::as_path).collect();
-    let targets = resolve(&refs).map_err(|error| format!("{error}"))?;
+    let targets = resolve(&refs).map_err(|error| match error {
+        hawk_core::scope::ScopeError::PathNotFound(path) => {
+            format!("path not found: {}", path.display())
+        }
+        hawk_core::scope::ScopeError::MetadataUnavailable { path } => {
+            format!("unable to determine path type: {}", path.display())
+        }
+    })?;
     let result = Scanner::built_in()
         .scan_targets(&targets)
         .map_err(|error| error.to_string())?;
