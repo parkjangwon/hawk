@@ -79,7 +79,7 @@ fn collect_directory(path: &Path, files: &mut Vec<FileEntry>) -> Result<(), Disc
         .collect::<Result<Vec<_>, io::Error>>()
         .map_err(|error| directory_error(path, error))?;
 
-    entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
         let entry_path = entry.path();
