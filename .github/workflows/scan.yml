@@ -1,0 +1,30 @@
+name: Hawk scan
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Hawk
+        run: cargo build --release -p hawk
+
+      - name: Scan the repository
+        run: |
+          ./target/release/hawk --format sarif -o report.sarif --fail-on-severity medium .
+        continue-on-error: true
+
+      - name: Upload SARIF report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hawk-report
+          path: report.sarif
+          if-no-files-found: ignore

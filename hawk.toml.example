@@ -1,0 +1,15 @@
+# Hawk project configuration (see `hawk config` to inspect the effective values).
+#
+# Every section is optional; `hawk .` works with no file at all.
+
+# include = ["src", "lib"]          # extra paths to scan (relative to this file)
+# exclude = ["vendor", "generated"] # layered over the default ignored dirs
+# packs = ["java", "korea-secure-coding"]
+# pack-dirs = ["./vendor/rules"]
+
+[report]
+# format = "terminal"   # terminal | json | sarif | html
+# output = "report.json"
+
+[policy]
+# exit-on-severity = "high"   # fail the scan (exit 2) only for findings at/above this
