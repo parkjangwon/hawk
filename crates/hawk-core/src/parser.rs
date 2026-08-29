@@ -41,42 +41,92 @@ pub trait Parser {
     fn parse(&self, source: &str) -> Result<SyntaxTree, ParseError>;
 }
 
-#[derive(Debug, Default)]
-pub struct JavaParser;
+/// A generic tree-sitter-backed parser for one language.
+#[derive(Debug)]
+pub struct TreeSitterParser {
+    pub(crate) language: Language,
+}
 
-impl Parser for JavaParser {
+impl TreeSitterParser {
+    fn language_parameter(&self) -> Result<tree_sitter::Language, ParseError> {
+        let language = match self.language {
+            Language::Java => tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+            Language::JavaScript => tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+            Language::TypeScript => {
+                tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT)
+            }
+            Language::Python => tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+            Language::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+            Language::Unknown => {
+                return Err(ParseError::UnsupportedLanguage(self.language));
+            }
+        };
+        Ok(language)
+    }
+}
+
+impl Parser for TreeSitterParser {
     fn language(&self) -> Language {
-        Language::Java
+        self.language
     }
 
     fn parse(&self, source: &str) -> Result<SyntaxTree, ParseError> {
         if source.contains('\0') {
             return Err(ParseError::InvalidSource("source contains NUL byte".into()));
         }
-
+        let ts_language = self.language_parameter()?;
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(tree_sitter_java::language())
+            .set_language(&ts_language)
             .map_err(|error| ParseError::InvalidSource(error.to_string()))?;
-
         let tree = parser
             .parse(source, None)
             .ok_or_else(|| ParseError::InvalidSource("parser returned no syntax tree".into()))?;
-
         Ok(SyntaxTree { tree })
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ParserRegistry {
-    java: JavaParser,
+    java: TreeSitterParser,
+    javascript: TreeSitterParser,
+    typescript: TreeSitterParser,
+    python: TreeSitterParser,
+    go: TreeSitterParser,
+    // TSX reuses the TypeScript grammar; routed via language() checks.
+}
+
+impl Default for ParserRegistry {
+    fn default() -> Self {
+        Self {
+            java: TreeSitterParser {
+                language: Language::Java,
+            },
+            javascript: TreeSitterParser {
+                language: Language::JavaScript,
+            },
+            typescript: TreeSitterParser {
+                language: Language::TypeScript,
+            },
+            python: TreeSitterParser {
+                language: Language::Python,
+            },
+            go: TreeSitterParser {
+                language: Language::Go,
+            },
+        }
+    }
 }
 
 impl ParserRegistry {
     pub fn parser_for(&self, language: Language) -> Option<&dyn Parser> {
         match language {
-            Language::Java => Some(&self.java),
-            _ => None,
+            Language::Java => Some(&self.java as &dyn Parser),
+            Language::JavaScript => Some(&self.javascript as &dyn Parser),
+            Language::TypeScript => Some(&self.typescript as &dyn Parser),
+            Language::Python => Some(&self.python as &dyn Parser),
+            Language::Go => Some(&self.go as &dyn Parser),
+            Language::Unknown => None,
         }
     }
 }
@@ -86,13 +136,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn java_parser_reports_its_language() {
-        assert_eq!(JavaParser.language(), Language::Java);
-    }
-
-    #[test]
     fn java_parser_produces_a_real_compilation_unit_tree() {
-        let tree = JavaParser
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser
             .parse("class Example { int value = 1; }")
             .expect("valid Java should parse");
 
@@ -101,15 +149,87 @@ mod tests {
     }
 
     #[test]
-    fn parser_registry_only_returns_supported_parsers() {
+    fn javascript_parser_produces_a_program_tree() {
+        let parser = TreeSitterParser {
+            language: Language::JavaScript,
+        };
+        let tree = parser.parse("const x = 1;").expect("valid JS should parse");
+
+        assert_eq!(tree.root_kind(), "program");
+        assert!(!tree.has_error());
+    }
+
+    #[test]
+    fn typescript_parser_produces_a_program_tree() {
+        let parser = TreeSitterParser {
+            language: Language::TypeScript,
+        };
+        let tree = parser
+            .parse("interface X { a: string }\nconst x: X = { a: \"y\" };")
+            .expect("valid TS should parse");
+
+        assert_eq!(tree.root_kind(), "program");
+        assert!(!tree.has_error());
+    }
+
+    #[test]
+    fn python_parser_produces_a_module_tree() {
+        let parser = TreeSitterParser {
+            language: Language::Python,
+        };
+        let tree = parser
+            .parse("import os\nos.system('ls')")
+            .expect("valid Python should parse");
+
+        assert_eq!(tree.root_kind(), "module");
+        assert!(!tree.has_error());
+    }
+
+    #[test]
+    fn go_parser_produces_a_source_file_tree() {
+        let parser = TreeSitterParser {
+            language: Language::Go,
+        };
+        let tree = parser
+            .parse("package main\nfunc main() { println(\"hi\") }")
+            .expect("valid Go should parse");
+
+        assert_eq!(tree.root_kind(), "source_file");
+        assert!(!tree.has_error());
+    }
+
+    #[test]
+    fn parser_registry_returns_supported_parsers() {
         let registry = ParserRegistry::default();
         assert!(registry.parser_for(Language::Java).is_some());
-        assert!(registry.parser_for(Language::Python).is_none());
+        assert!(registry.parser_for(Language::JavaScript).is_some());
+        assert!(registry.parser_for(Language::TypeScript).is_some());
+        assert!(registry.parser_for(Language::Python).is_some());
+        assert!(registry.parser_for(Language::Go).is_some());
+        assert!(registry.parser_for(Language::Unknown).is_none());
+    }
+
+    #[test]
+    fn unknown_language_is_an_explicit_error() {
+        let parser = TreeSitterParser {
+            language: Language::Unknown,
+        };
+        let error = parser
+            .parse("anything")
+            .expect_err("unknown language must fail");
+
+        assert!(matches!(
+            error,
+            ParseError::UnsupportedLanguage(Language::Unknown)
+        ));
     }
 
     #[test]
     fn malformed_java_is_reported_as_a_tree_with_errors() {
-        let tree = JavaParser
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser
             .parse("class Example {")
             .expect("Tree-sitter should still produce an error tree");
 
@@ -118,7 +238,10 @@ mod tests {
 
     #[test]
     fn invalid_source_returns_a_parse_error() {
-        let error = JavaParser
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let error = parser
             .parse("class\0Example {}")
             .expect_err("NUL bytes should be rejected");
 

@@ -64,12 +64,18 @@ impl SyntaxTree {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::{JavaParser, Parser};
+    use crate::{
+        language::Language,
+        parser::{Parser, TreeSitterParser},
+    };
 
     #[test]
     fn root_exposes_structural_information() {
         let source = "class Example { int value = 1; }";
-        let tree = JavaParser.parse(source).unwrap();
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(source).unwrap();
         let root = tree.root();
 
         assert_eq!(root.kind(), "program");
@@ -82,7 +88,10 @@ mod tests {
     #[test]
     fn children_can_be_traversed_without_exposing_tree_sitter() {
         let source = "class Example {}";
-        let tree = JavaParser.parse(source).unwrap();
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(source).unwrap();
         let kinds: Vec<_> = tree
             .root()
             .children()
@@ -95,7 +104,10 @@ mod tests {
     #[test]
     fn node_text_returns_none_for_invalid_utf8_boundaries() {
         let source = "class Example {}";
-        let tree = JavaParser.parse(source).unwrap();
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(source).unwrap();
         let node = tree.root();
 
         assert_eq!(node.text("different"), None);
