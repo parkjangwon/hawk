@@ -1,6 +1,7 @@
 //! Core domain and analysis functionality for Hawk.
 
 pub mod ast;
+pub mod baseline;
 pub mod cache;
 pub mod config;
 pub mod discovery;

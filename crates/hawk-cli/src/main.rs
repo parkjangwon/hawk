@@ -46,6 +46,9 @@ where
     if args.first().map(String::as_str) == Some("rule") {
         return run_rule_command(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("baseline") {
+        return run_baseline_command(&args[1..]);
+    }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print_help();
         return RunOutcome::Help;
@@ -304,6 +307,67 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
         }
         _ => RunOutcome::Clean,
     }
+}
+
+/// Dispatches the `hawk baseline` subcommand family.
+fn run_baseline_command(args: &[String]) -> RunOutcome {
+    let Some(sub) = args.first() else {
+        return fatal("missing baseline subcommand (create, update, status)".into());
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let path = hawk_core::baseline::baseline_path(&cwd);
+    match sub.as_str() {
+        "create" => run_baseline_create(&path, cwd.join(".hawk").join("cache")),
+        "update" => run_baseline_create(&path, cwd.join(".hawk").join("cache")),
+        "status" => run_baseline_status(&path),
+        "help" | "--help" | "-h" => {
+            println!("Usage: hawk baseline <create|update|status>");
+            RunOutcome::Help
+        }
+        other => fatal(format!("unknown baseline subcommand '{other}'")),
+    }
+}
+
+/// Scans the current directory and stores all finding fingerprints as the new baseline.
+fn run_baseline_create(path: &std::path::Path, cache_dir: PathBuf) -> RunOutcome {
+    let scanner = match Scanner::built_in() {
+        Ok(s) => s.with_cache(cache_dir),
+        Err(error) => return fatal(error.to_string()),
+    };
+    let result = match scanner.scan_paths(&[]) {
+        Ok(result) => result,
+        Err(error) => return fatal(error.to_string()),
+    };
+    let fingerprints: Vec<String> = result
+        .findings
+        .iter()
+        .map(|f| f.fingerprint.clone())
+        .collect();
+    let baseline = hawk_core::baseline::Baseline { fingerprints };
+    match baseline.save(path) {
+        Ok(()) => {
+            println!(
+                "baseline written with {} fingerprint(s) to {}",
+                baseline.fingerprints.len(),
+                path.display()
+            );
+            RunOutcome::Clean
+        }
+        Err(error) => fatal(format!("baseline error: {error}")),
+    }
+}
+
+/// Compares the current findings against an existing baseline.
+fn run_baseline_status(path: &std::path::Path) -> RunOutcome {
+    let baseline = match hawk_core::baseline::Baseline::load(path) {
+        Ok(baseline) => baseline,
+        Err(error) => return fatal(format!("baseline error: {error}")),
+    };
+    println!(
+        "baseline has {} fingerprint(s)",
+        baseline.fingerprints.len()
+    );
+    RunOutcome::Clean
 }
 
 #[cfg(test)]
