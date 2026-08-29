@@ -133,7 +133,10 @@ fn directory_error(path: &Path, error: io::Error) -> DiscoveryError {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
 
     struct TempDir {
         path: PathBuf,
@@ -141,11 +144,15 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
             let suffix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock must be after UNIX_EPOCH")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!("hawk-discovery-test-{suffix}"));
+            let path = std::env::temp_dir().join(format!(
+                "hawk-discovery-test-{}-{suffix}-{seq}",
+                std::process::id()
+            ));
             fs::create_dir(&path).expect("temporary directory should be created");
             Self { path }
         }

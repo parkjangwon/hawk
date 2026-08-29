@@ -35,10 +35,13 @@ impl Scanner {
 
         for file in files {
             let path = file.path().to_path_buf();
-            let source = fs::read_to_string(&path).map_err(|source| ScanError::ReadSource {
-                path: path.clone(),
-                source: source.to_string(),
-            })?;
+            let source = match fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(source) => {
+                    result.push_issue(FileIssueKind::Read, path.clone(), source.to_string());
+                    continue;
+                }
+            };
 
             let language = Language::from_path(&path);
             let Some(parser) = self.parsers.parser_for(language) else {
@@ -46,13 +49,22 @@ impl Scanner {
                 continue;
             };
 
-            let tree = parser.parse(&source).map_err(|source| ScanError::Parse {
-                path: path.clone(),
-                source,
-            })?;
+            let tree = match parser.parse(&source) {
+                Ok(tree) => tree,
+                Err(source) => {
+                    result.push_issue(FileIssueKind::Parse, path.clone(), source.to_string());
+                    continue;
+                }
+            };
 
             if tree.has_error() {
-                result.parse_errors += 1;
+                // Analysis of a partially-parsed tree is incomplete; run rules anyway
+                // but surface the issue so a degraded result can never look likea clean one.
+                result.push_issue(
+                    FileIssueKind::Parse,
+                    path.clone(),
+                    "syntax tree contains errors; analysis is incomplete".to_string(),
+                );
             }
 
             for rule in self.rules.iter() {
@@ -68,11 +80,24 @@ impl Scanner {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileIssueKind {
+    Read,
+    Parse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIssue {
+    pub kind: FileIssueKind,
+    pub path: PathBuf,
+    pub message: String,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     pub discovered_files: usize,
     pub skipped_files: usize,
-    pub parse_errors: usize,
+    pub issues: Vec<FileIssue>,
     pub findings: Findings,
 }
 
@@ -83,8 +108,21 @@ impl ScanResult {
             ..Self::default()
         }
     }
-}
 
+    fn push_issue(&mut self, kind: FileIssueKind, path: PathBuf, message: String) {
+        self.issues.push(FileIssue {
+            kind,
+            path,
+            message,
+        });
+    }
+
+    /// A scan is degraded when any file could not be fully analyzed; incomplete results
+    /// must never be presented as authoritative. See ADR-0001.
+    pub fn degraded(&self) -> bool {
+        !self.issues.is_empty()
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanError {
     Scope(ScopeError),
@@ -120,18 +158,25 @@ mod tests {
     use super::*;
     use std::{
         fs,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
 
     struct TempDir(PathBuf);
 
     impl TempDir {
         fn new() -> Self {
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
             let suffix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!("hawk-scan-test-{suffix}"));
+            let path = std::env::temp_dir().join(format!(
+                "hawk-scan-test-{}-{suffix}-{seq}",
+                std::process::id()
+            ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -161,7 +206,8 @@ mod tests {
 
         assert_eq!(result.discovered_files, 1);
         assert_eq!(result.skipped_files, 0);
-        assert_eq!(result.parse_errors, 0);
+        assert!(result.issues.is_empty());
+        assert!(!result.degraded());
         assert_eq!(result.findings.len(), 1);
     }
 
@@ -174,6 +220,32 @@ mod tests {
 
         assert_eq!(result.discovered_files, 1);
         assert_eq!(result.skipped_files, 1);
+        assert!(result.issues.is_empty());
+        assert!(!result.degraded());
         assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn unparseable_file_is_isolated_and_reported_as_degraded() {
+        let temp = TempDir::new();
+        let path = temp.write("Broken.java", "class Example {");
+
+        let result = Scanner::built_in().scan_paths(&[path.as_path()]).unwrap();
+
+        assert_eq!(result.discovered_files, 1);
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].kind, FileIssueKind::Parse);
+        assert_eq!(result.issues[0].path, path);
+        assert!(result.degraded());
+    }
+
+    #[test]
+    fn scan_pipeline_error_is_fatal_only_for_scope_and_discovery() {
+        // Scope errors abort the whole scan: a missing path cannot be scanned.
+        let err = Scanner::built_in()
+            .scan_paths(&[std::path::Path::new("definitely-missing-path")])
+            .unwrap_err();
+
+        assert!(matches!(err, ScanError::Scope(_)));
     }
 }
