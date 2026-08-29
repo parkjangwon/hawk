@@ -48,6 +48,12 @@ pub struct TreeSitterParser {
 }
 
 impl TreeSitterParser {
+    /// The tree-sitter `Language` for this parser's language (needed by
+    /// tree-sitter queries). `None` for unknown languages.
+    pub fn tree_sitter_language(&self) -> Result<tree_sitter::Language, ParseError> {
+        self.language_parameter()
+    }
+
     fn language_parameter(&self) -> Result<tree_sitter::Language, ParseError> {
         let language = match self.language {
             Language::Java => tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
@@ -134,6 +140,7 @@ impl ParserRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tree_sitter::StreamingIterator;
 
     #[test]
     fn java_parser_produces_a_real_compilation_unit_tree() {
@@ -196,6 +203,29 @@ mod tests {
 
         assert_eq!(tree.root_kind(), "source_file");
         assert!(!tree.has_error());
+    }
+
+    #[test]
+    fn tree_sitter_query_matches_ast_nodes() {
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let source = "class A { void run() { Runtime.getRuntime().exec(cmd); } }";
+        let tree = parser.parse(source).expect("valid Java should parse");
+        let ts_language = parser
+            .tree_sitter_language()
+            .expect("language should be available");
+
+        // Find every method invocation (the C-style "shape" pattern).
+        let query = tree_sitter::Query::new(&ts_language, "(method_invocation) @m")
+            .expect("query should parse");
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.raw_root_node(), source.as_bytes());
+        let mut count = 0usize;
+        while matches.next().is_some() {
+            count += 1;
+        }
+        assert!(count >= 2, "expected method invocations, got {count}");
     }
 
     #[test]

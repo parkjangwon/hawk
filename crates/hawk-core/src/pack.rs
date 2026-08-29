@@ -36,6 +36,8 @@ pub struct Rule {
     pub pattern: Option<PatternRule>,
     /// The taint config, when this rule is a data-flow (taint) rule.
     pub taint: Option<crate::taint::TaintConfig>,
+    /// The tree-sitter query, when this rule is an AST (query) rule.
+    pub query: Option<QueryRule>,
     /// Source file this rule was loaded from (for diagnostics).
     pub source: PathBuf,
 }
@@ -49,6 +51,12 @@ pub struct PatternRule {
     /// Optional replacement suggestion (Semgrep `fix` style), reported with
     /// the finding for `--autofix`-style workflows.
     pub fix: Option<String>,
+}
+
+/// A tree-sitter query (S-expression pattern), Semgrep "rules look like code".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryRule {
+    pub tree_sitter: String,
 }
 
 /// Errors produced while loading or validating packs.
@@ -295,8 +303,100 @@ impl CompiledRule {
                 })
                 .collect();
         }
+        if let Some(query) = &self.def.query {
+            match execute_query(
+                tree.raw_root_node(),
+                source,
+                &query.tree_sitter,
+                self.def.languages.first().copied(),
+            ) {
+                Ok(matches) => {
+                    return matches
+                        .iter()
+                        .map(|node| {
+                            let pos = node.start_position();
+                            Finding::new(
+                                self.def.id.clone(),
+                                self.def.severity,
+                                self.def.name.clone(),
+                                SourceLocation {
+                                    path: path.to_path_buf(),
+                                    start_byte: node.start_byte(),
+                                    end_byte: node.end_byte(),
+                                    start_line: pos.row + 1,
+                                    start_column: pos.column + 1,
+                                    end_line: pos.row + 1,
+                                    end_column: pos.column + 1,
+                                },
+                            )
+                            .with_confidence(self.def.confidence)
+                            .with_rule_name(self.def.name.clone())
+                            .with_description(self.def.description.clone())
+                            .with_language(
+                                self.def
+                                    .languages
+                                    .first()
+                                    .copied()
+                                    .unwrap_or(Language::Unknown),
+                            )
+                        })
+                        .collect();
+                }
+                Err(message) => {
+                    // Explicit failure per philosophy: a broken query must not
+                    // yield a silent "no findings".
+                    return vec![Finding::new(
+                        format!("{}:query-error", self.def.id),
+                        self.def.severity,
+                        format!("tree-sitter query failed: {message}"),
+                        SourceLocation {
+                            path: path.to_path_buf(),
+                            start_byte: 0,
+                            end_byte: 0,
+                            start_line: 1,
+                            start_column: 1,
+                            end_line: 1,
+                            end_column: 1,
+                        },
+                    )];
+                }
+            }
+        }
         self.check(source, path)
     }
+}
+
+/// Runs a tree-sitter query against a syntax tree and returns matching nodes.
+fn execute_query<'tree>(
+    root: tree_sitter::Node<'tree>,
+    source: &str,
+    query_source: &str,
+    language: Option<Language>,
+) -> Result<Vec<tree_sitter::Node<'tree>>, String> {
+    use tree_sitter::StreamingIterator as _;
+    let Some(language) = language else {
+        return Err("query rules require a declared language".into());
+    };
+    let ts_language = match language {
+        Language::Java => tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+        Language::JavaScript => tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+        Language::TypeScript => {
+            tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT)
+        }
+        Language::Python => tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+        Language::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+        Language::Unknown => return Err("unsupported language".into()),
+    };
+    let query = tree_sitter::Query::new(&ts_language, query_source).map_err(|e| e.to_string())?;
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, root, source.as_bytes());
+    let mut out = Vec::new();
+    while let Some(m) = matches.next() {
+        for capture in m.captures {
+            out.push(capture.node);
+        }
+    }
+    Ok(out)
 }
 
 fn line_column(source: &str, byte: usize) -> (usize, usize) {
@@ -426,7 +526,13 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
             not_regex: p.not_regex,
             fix: p.fix,
         }),
-        _ => None, // query/taint capabilities load without a pattern engine for now
+        _ => None,
+    };
+    let query = match capability {
+        "query" => raw.query.map(|q| QueryRule {
+            tree_sitter: q.tree_sitter,
+        }),
+        _ => None,
     };
 
     let taint = match capability {
@@ -451,6 +557,7 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
         owasp: raw.owasp,
         pattern,
         taint,
+        query,
         source: path,
     })
 }
@@ -684,6 +791,7 @@ impl PackRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::Parser;
 
     fn write_pack(dir: &Path, manifest: &str, rule_files: &[(&str, &str)]) {
         std::fs::create_dir_all(dir.join("rules")).unwrap();
@@ -824,6 +932,7 @@ mod tests {
                 fix: Some("avoid exec".to_string()),
             }),
             taint: None,
+            query: None,
             source: PathBuf::from("inline"),
         })
         .expect("rule should compile");
@@ -841,6 +950,44 @@ mod tests {
         assert_eq!(
             fired[0].recommendation.as_deref(),
             Some("Suggested fix: avoid exec")
+        );
+    }
+
+    #[test]
+    fn query_rule_matches_ast_nodes_and_reports_findings() {
+        let query_rule = CompiledRule::compile(Rule {
+            id: "java.security.trace-log".into(),
+            name: "Tracing call".into(),
+            description: "Logging of sensitive operation".into(),
+            recommendation: None,
+            category: Some("logging".into()),
+            severity: Severity::Low,
+            confidence: Confidence::Low,
+            languages: vec![Language::Java],
+            cwe: None,
+            owasp: None,
+            pattern: None,
+            taint: None,
+            query: Some(QueryRule {
+                tree_sitter: "(method_invocation) @call".into(),
+            }),
+            source: PathBuf::from("inline"),
+        })
+        .expect("query rule should compile");
+
+        let parser = crate::parser::TreeSitterParser {
+            language: Language::Java,
+        };
+        let source = "class A { void m() { a.b(); c.d(); } }";
+        let tree = parser.parse(source).expect("java should parse");
+
+        let findings = query_rule.check_parsed(&tree, source, Path::new("A.java"));
+        // captures: method_invocation for a.b() and c.d()
+        assert_eq!(
+            findings.len(),
+            2,
+            "expected two query matches, got {}",
+            findings.len()
         );
     }
 }
