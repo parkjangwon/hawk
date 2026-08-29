@@ -1,6 +1,6 @@
 use crate::{
     ast::AstNode,
-    finding::{Finding, Findings, Severity, SourceLocation},
+    finding::{Confidence, Finding, Findings, Severity, SourceLocation},
     language::Language,
 };
 
@@ -56,12 +56,27 @@ fn visit(
             .and_then(|object| object.text(source))
             .is_some_and(|object| object == "Runtime.getRuntime()")
     {
-        findings.push(Finding::new(
-            rule.id(),
-            rule.severity(),
-            rule.description(),
-            location(&root, path),
-        ));
+        findings.push(
+            Finding::new(
+                rule.id(),
+                rule.severity(),
+                rule.description(),
+                location(&root, path),
+            )
+            .with_confidence(Confidence::High)
+            .with_rule_name("Runtime exec call")
+            .with_description(
+                "Runtime.getRuntime().exec executes an operating-system command with the supplied argument. Untrusted input reaching this call enables OS-level command injection.",
+            )
+            .with_recommendation(
+                "Avoid Runtime.exec where possible; prefer the ProcessBuilder API with a list of arguments (never a shell string, validate and allowlist inputs,and avoid shell metacharacters.",
+            )
+            .with_category("command-injection")
+            .with_language(Language::Java)
+            .with_framework("Java SE")
+            .with_cwe("CWE-78")
+            .with_owasp("A03:2021"),
+        );
     }
 
     for child in root.children() {
@@ -118,7 +133,20 @@ mod tests {
         let finding = findings.iter().next().unwrap();
         assert_eq!(finding.rule_id, "java.security.runtime-exec");
         assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.confidence, Confidence::High);
+        assert_eq!(finding.category.as_deref(), Some("command-injection"));
+        assert_eq!(finding.cwe.as_deref(), Some("CWE-78"));
+        assert_eq!(finding.owasp.as_deref(), Some("A03:2021"));
+        assert_eq!(finding.language, Some(Language::Java));
         assert_eq!(finding.location.start_line, 1);
+        assert!(!finding.fingerprint.is_empty());
+        // Metadata must be deterministic across repeated scans of the same file.
+        let again =
+            JavaRuntimeExecRule.check(tree.root(), source, std::path::Path::new("Example.java"));
+        assert_eq!(
+            again.iter().next().unwrap().fingerprint,
+            finding.fingerprint
+        );
     }
 
     #[test]
