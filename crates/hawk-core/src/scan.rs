@@ -66,6 +66,11 @@ impl Scanner {
         Ok(result)
     }
 
+    /// Restricts the loaded packs to the named ones (see `--pack`).
+    pub fn select_packs(&mut self, wanted: &[String]) {
+        self.packs.select_packs(wanted);
+    }
+
     /// Whether the scanner carries any loaded rules at all.
     pub fn has_rules(&self) -> bool {
         self.packs.count() > 0

@@ -68,6 +68,7 @@ where
     let mut format: Option<String> = None;
     let mut output: Option<PathBuf> = None;
     let mut fail_on_severity: Option<Severity> = None;
+    let mut packs: Vec<String> = Vec::new();
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
@@ -75,6 +76,12 @@ where
             "--changed" => git_mode = Some(GitScope::Changed),
             "--staged" => git_mode = Some(GitScope::Staged),
             "--no-cache" => use_cache = false,
+            "--pack" => {
+                packs.push(match it.next() {
+                    Some(value) => value.clone(),
+                    None => return fatal("--pack requires a pack name".to_string()),
+                });
+            }
             "--fail-on-severity" => {
                 let level = match it.next() {
                     Some(value) => value.clone(),
@@ -116,6 +123,9 @@ where
         Ok(scanner) => scanner,
         Err(error) => return fatal(error.to_string()),
     };
+    if !packs.is_empty() {
+        scanner.select_packs(&packs);
+    }
 
     // Git-aware modes resolve explicit paths to changed/staged files first.
     let targets = if let Some(mode) = git_mode {
@@ -208,6 +218,7 @@ fn fatal(message: String) -> RunOutcome {
 
 fn print_help() {
     println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache
+  --pack NAME    Only load the named rule pack (repeatable)
   --format F     Report format: terminal (default), json, sarif, html
   --fail-on-severity L  Only fail (exit 2) for findings at/above severity L
   -o, --output   Write the report to a file instead of stdout\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
@@ -296,9 +307,13 @@ fn run_rule_validate(args: &[String]) -> RunOutcome {
         let path = std::path::Path::new(target);
         if path.is_dir() {
             match hawk_core::pack::validate_pack_dir(path) {
-                Ok(meta) => {
-                    println!("{}: pack '{}' v{} — valid", target, meta.name, meta.version);
-                }
+                Ok(meta) => match &meta.min_hawk {
+                    Some(min) => println!(
+                        "{}: pack '{}' v{} — valid (requires hawk >= {})",
+                        target, meta.name, meta.version, min
+                    ),
+                    None => println!("{}: pack '{}' v{} — valid", target, meta.name, meta.version),
+                },
                 Err(error) => {
                     eprintln!("{}: invalid — {error}", target);
                     failed = true;

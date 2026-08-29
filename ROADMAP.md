@@ -11,19 +11,19 @@ The architecture is being implemented incrementally. Open design decisions below
 Before substantial implementation of each public subsystem, settle the following interfaces:
 
 - [ ] Define final architecture and crate/module boundaries.
-- [ ] Define the normalized Finding Model.
-- [ ] Define the Report Model.
-- [ ] Define the Rule DSL / TOML schema.
-- [ ] Define Rule Pack manifest and versioning.
-- [ ] Define configuration schema and final config filename.
-- [ ] Define severity and confidence semantics.
-- [ ] Define finding fingerprint/stability rules.
-- [ ] Define baseline behavior.
-- [ ] Define include/exclude/ignore semantics.
-- [ ] Decide parser technology and language-specific AST adapters.
+- [x] Define the normalized Finding Model.
+- [x] Define the Report Model.
+- [x] Define the Rule DSL / TOML schema.
+- [x] Define Rule Pack manifest and versioning.
+- [x] Define configuration schema and final config filename.
+- [x] Define severity and confidence semantics.
+- [x] Define finding fingerprint/stability rules.
+- [x] Define baseline behavior.
+- [x] Define include/exclude/ignore semantics.
+- [x] Decide parser technology and language-specific AST adapters.
 - [ ] Decide licensing and attribution requirements for external rule standards.
 - [ ] Document which Korean secure-coding standards/rules can be implemented and how they are attributed.
-- [ ] Keep optional future storage extensibility in mind without introducing a database.
+- [x] Keep optional future storage extensibility in mind without introducing a database.
 
 ### Guiding architecture
 
@@ -111,22 +111,22 @@ The zero-configuration path must remain functional.
 
 **Goal: make Hawk extensible without recompiling the engine.**
 
-- [ ] Human-readable TOML rule definition.
-- [ ] Rule metadata.
-- [ ] Rule severity.
-- [ ] CWE mapping.
-- [ ] OWASP mapping.
-- [ ] Remediation guidance.
-- [ ] Analysis capability declaration (pattern / AST / semantic / dataflow).
-- [ ] Rule Pack manifest.
-- [ ] Rule Pack versioning.
-- [ ] Built-in Java security pack.
-- [ ] Custom user Rule Packs.
-- [ ] Project configuration file.
-- [ ] Include/exclude configuration.
-- [ ] Rule Pack selection.
-- [ ] CLI overrides.
-- [ ] Rule testing command / playground.
+- [x] Human-readable TOML rule definition.
+- [x] Rule metadata.
+- [x] Rule severity.
+- [x] CWE mapping.
+- [x] OWASP mapping.
+- [x] Remediation guidance.
+- [x] Analysis capability declaration (pattern / AST / semantic / dataflow).
+- [x] Rule Pack manifest.
+- [x] Rule Pack versioning.
+- [x] Built-in Java security pack.
+- [x] Custom user Rule Packs.
+- [x] Project configuration file.
+- [x] Include/exclude configuration.
+- [x] Rule Pack selection.
+- [x] CLI overrides.
+- [x] Rule testing command / playground.
 
 Example target:
 
@@ -164,11 +164,11 @@ JS/TS → Node.js / React / Vue / Express / Next.js
 Python → Django / Flask / FastAPI
 ```
 
-- [ ] Java semantic analysis.
-- [ ] JavaScript AST/semantic analysis.
-- [ ] TypeScript AST/semantic analysis.
-- [ ] Python AST/semantic analysis.
-- [ ] Go AST/semantic analysis.
+- [x] Java semantic analysis.
+- [x] JavaScript AST/semantic analysis.
+- [x] TypeScript AST/semantic analysis.
+- [x] Python AST/semantic analysis.
+- [x] Go AST/semantic analysis.
 - [ ] Framework-aware rules where valuable.
 
 ---
@@ -183,19 +183,19 @@ Introduce a reusable model:
 Source → Propagation → Sanitizer → Sink
 ```
 
-- [ ] Source definitions.
-- [ ] Sink definitions.
-- [ ] Sanitizer definitions.
-- [ ] Variable propagation.
-- [ ] Assignment tracking.
-- [ ] Basic control/data-flow graph.
-- [ ] Method/function boundaries.
-- [ ] SQL injection rules.
-- [ ] Command injection rules.
-- [ ] XSS rules.
-- [ ] Path traversal rules.
-- [ ] SSRF-related rules.
-- [ ] Security-sensitive API rules.
+- [x] Source definitions.
+- [x] Sink definitions.
+- [x] Sanitizer definitions.
+- [x] Variable propagation.
+- [x] Assignment tracking.
+- [x] Basic control/data-flow graph.
+- [x] Method/function boundaries.
+- [x] SQL injection rules.
+- [x] Command injection rules.
+- [x] XSS rules.
+- [x] Path traversal rules.
+- [x] SSRF-related rules.
+- [x] Security-sensitive API rules.
 
 The engine should own data-flow algorithms; Rule Packs should declare security semantics where practical.
 
@@ -205,16 +205,16 @@ The engine should own data-flow algorithms; Rule Packs should declare security s
 
 **Goal: make Hawk extremely fast during everyday development.**
 
-- [ ] File hashing.
-- [ ] Local cache.
+- [x] File hashing.
+- [x] Local cache.
 - [ ] AST cache.
-- [ ] Incremental analysis.
-- [ ] `hawk --changed`.
-- [ ] `hawk --staged`.
+- [x] Incremental analysis.
+- [x] `hawk --changed`.
+- [x] `hawk --staged`.
 - [ ] Git-aware baseline.
-- [ ] Pre-commit integration.
-- [ ] Benchmark suite and performance budgets.
-- [ ] Parallel file analysis.
+- [x] Pre-commit integration.
+- [x] Benchmark suite and performance budgets.
+- [x] Parallel file analysis.
 
 Target philosophy:
 
@@ -230,27 +230,27 @@ No database should be introduced solely for caching.
 
 ### Baseline
 
-- [ ] `hawk baseline create`.
-- [ ] Stable finding fingerprints.
-- [ ] Existing finding suppression.
-- [ ] New finding detection.
-- [ ] Fixed finding detection.
-- [ ] Regression detection.
+- [x] `hawk baseline create`.
+- [x] Stable finding fingerprints.
+- [x] Existing finding suppression.
+- [x] New finding detection.
+- [x] Fixed finding detection.
+- [x] Regression detection.
 
 ### Output
 
-- [ ] Terminal report.
-- [ ] JSON output.
-- [ ] SARIF output.
-- [ ] HTML Security Assessment Report.
+- [x] Terminal report.
+- [x] JSON output.
+- [x] SARIF output.
+- [x] HTML Security Assessment Report.
 - [ ] PDF report where practical.
-- [ ] Report metadata.
-- [ ] Severity summary.
-- [ ] Finding details.
-- [ ] Source snippets.
-- [ ] Remediation guidance.
-- [ ] CWE/OWASP/Korean-standard mappings.
-- [ ] Scan statistics and duration.
+- [x] Report metadata.
+- [x] Severity summary.
+- [x] Finding details.
+- [x] Source snippets.
+- [x] Remediation guidance.
+- [x] CWE/OWASP/Korean-standard mappings.
+- [x] Scan statistics and duration.
 
 Reports should be **English-first** for international portability.
 
@@ -262,13 +262,13 @@ Reports should be **English-first** for international portability.
 
 - [ ] Research authoritative Korean secure-coding standards.
 - [ ] Verify copyright/license/attribution requirements.
-- [ ] Define independent Hawk rule IDs.
+- [x] Define independent Hawk rule IDs.
 - [ ] Map rules to applicable Korean guidance.
-- [ ] Implement high-value Java rules first.
-- [ ] Add CWE mappings where applicable.
-- [ ] Add OWASP mappings where applicable.
+- [x] Implement high-value Java rules first.
+- [x] Add CWE mappings where applicable.
+- [x] Add OWASP mappings where applicable.
 - [ ] Publish the Rule Pack independently.
-- [ ] Document rule coverage and limitations.
+- [x] Document rule coverage and limitations.
 
 Important: a mapping to a government/industry standard must not imply government certification or endorsement of Hawk.
 
@@ -279,16 +279,16 @@ Important: a mapping to a government/industry standard must not imply government
 **Goal: make Hawk pleasant enough to use every day.**
 
 - [ ] TUI configuration/inspection.
-- [ ] `hawk config`.
-- [ ] Rule discovery.
-- [ ] Rule explanation.
-- [ ] `hawk rule test`.
+- [x] `hawk config`.
+- [x] Rule discovery.
+- [x] Rule explanation.
+- [x] `hawk rule test`.
 - [ ] Better source highlighting.
-- [ ] Helpful error messages.
-- [ ] VS Code integration.
-- [ ] IntelliJ IDEA integration.
-- [ ] GitHub Actions integration.
-- [ ] CI-friendly exit policies.
+- [x] Helpful error messages.
+- [x] VS Code integration.
+- [x] IntelliJ IDEA integration.
+- [x] GitHub Actions integration.
+- [x] CI-friendly exit policies.
 
 The TUI is intentionally later than the core CLI and rule engine.
 
@@ -298,12 +298,12 @@ The TUI is intentionally later than the core CLI and rule engine.
 
 **Goal: turn rules into an extensible open-source ecosystem.**
 
-- [ ] Rule Pack repository conventions.
-- [ ] Rule Pack validation.
-- [ ] Rule Pack compatibility metadata.
-- [ ] Community contribution guide.
-- [ ] Rule quality/testing guidelines.
-- [ ] Company/private Rule Pack documentation.
+- [x] Rule Pack repository conventions.
+- [x] Rule Pack validation.
+- [x] Rule Pack compatibility metadata.
+- [x] Community contribution guide.
+- [x] Rule quality/testing guidelines.
+- [x] Company/private Rule Pack documentation.
 - [ ] Optional future Rule Pack distribution mechanism.
 
 Potential future packs:

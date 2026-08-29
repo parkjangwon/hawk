@@ -12,12 +12,14 @@ use crate::{
 };
 use serde::Deserialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PackMeta {
     pub name: String,
     pub version: String,
     pub description: Option<String>,
     pub authors: Option<Vec<String>>,
+    /// Minimum Hawk version this pack requires (from `pack.toml` metadata).
+    pub min_hawk: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +112,21 @@ struct RawManifest {
     version: String,
     description: Option<String>,
     authors: Option<Vec<String>>,
+    #[serde(default)]
+    metadata: RawManifestMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawManifestMetadata {
+    #[serde(rename = "compat")]
+    compat: Option<RawCompatibility>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawCompatibility {
+    /// Minimum Hawk rule-schema version this pack requires (semver-like).
+    #[serde(rename = "min-hawk")]
+    min_hawk: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -448,6 +465,7 @@ pub fn load_pack_dir(dir: &Path) -> Result<(PackMeta, Vec<Rule>), PackError> {
         version: raw.version,
         description: raw.description,
         authors: raw.authors,
+        min_hawk: raw.metadata.compat.and_then(|m| m.min_hawk),
     };
 
     let mut rule_files = Vec::new();
@@ -605,6 +623,7 @@ fn parse_manifest_str(content: &str, path: PathBuf) -> Result<PackMeta, PackErro
         version: raw.version,
         description: raw.description,
         authors: raw.authors,
+        min_hawk: raw.metadata.compat.and_then(|m| m.min_hawk),
     })
 }
 
@@ -744,6 +763,17 @@ pub struct PackRegistry {
 pub fn validate_pack_dir(dir: &Path) -> Result<PackMeta, PackError> {
     // Reuse the loader; any parse/validate error propagates.
     let (meta, rules) = load_pack_dir(dir)?;
+    if let Some(min) = &meta.min_hawk {
+        if min.as_str() > env!("CARGO_PKG_VERSION") {
+            return Err(PackError::Validate {
+                message: format!(
+                    "pack '{}' requires hawk >= {min}, but this is {}",
+                    meta.name,
+                    env!("CARGO_PKG_VERSION")
+                ),
+            });
+        }
+    }
     for rule in rules {
         CompiledRule::compile(rule).map_err(|error| {
             let (rule, message) = *error;
@@ -791,6 +821,16 @@ impl PackRegistry {
     pub fn with_built_in() -> Result<Self, PackError> {
         let packs = built_in_packs()?;
         Ok(Self { packs })
+    }
+
+    /// Keeps only the packs whose manifest name is in `wanted` (in registry order).
+    /// Empty slice keeps everything.
+    pub fn select_packs(&mut self, wanted: &[String]) {
+        if wanted.is_empty() {
+            return;
+        }
+        self.packs
+            .retain(|(meta, _)| wanted.iter().any(|w| w == &meta.name));
     }
 
     /// Loads packs from directories, in order. Returns duplicates as an error.

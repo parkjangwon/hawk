@@ -356,9 +356,18 @@ The goal is a **small, fast, local, free, extensible security analyzer for devel
 
 ## Project Status
 
-Hawk is currently in the **architecture and design phase**. Implementation should begin only after the core interfaces and schemas are sufficiently agreed upon.
+Hawk is **feature-complete against the ROADMAP** (Phases 0–9 implemented): a single Rust binary that scans a
+project with `hawk .` and produces fast, deterministic reports in terminal, JSON, SARIF, or HTML formats.
+Rule Packs are versionable TOML data (with tree-sitter query and taint capabilities), the engine ships
+Java/JavaScript/TypeScript/Python/Go parsers, and Git-aware (`--changed`/`--staged`), incremental-cache,
+baseline, and `--fail-on-severity` workflows make it usable in CI. Some deeper integrations (a standalone
+TUI, an independently published Korean rule pack, PDF output, prefix wide performance budgets) remain future
+work; see [ROADMAP.md](ROADMAP.md) for the exact checklist.
 
-See [ROADMAP.md](ROADMAP.md) for the planned evolution.
+## Status
+
+Quality gate (fmt/clippy/test/diff) is green on the default branch; the ROADMAP checklist tracks which
+items are complete at a glance.
 
 ## Development Philosophy
 
