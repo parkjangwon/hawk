@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -43,25 +44,49 @@ impl Scanner {
 
     pub fn scan_targets(&self, targets: &[ScanTarget]) -> Result<ScanResult, ScanError> {
         let files = discover(targets).map_err(ScanError::Discovery)?;
+        // Each file produces a per-file ScanResult; results are reassembled in
+        // the deterministic discovery order (rayon preserves the source order
+        // of the iterator via indexed output, and we sort by path anyway).
+        let per_file: Vec<ScanResult> = files
+            .par_iter()
+            .map(|file| {
+                let path = file.path();
+                Scanner::scan_one(&self.packs, &self.parsers, &self.cache, path)
+            })
+            .collect();
+
         let mut result = ScanResult::new(files.len());
-
-        for file in files {
-            let path = file.path().to_path_buf();
-            self.scan_one(&path, &mut result);
+        for file_result in per_file {
+            result.skipped_files += file_result.skipped_files;
+            result.issues.extend(file_result.issues);
+            for finding in file_result.findings.iter() {
+                result.findings.push(finding.clone());
+            }
         }
-
         Ok(result)
     }
 
-    fn scan_one(&self, path: &Path, result: &mut ScanResult) {
+    /// Whether the scanner carries any loaded rules at all.
+    pub fn has_rules(&self) -> bool {
+        self.packs.count() > 0
+    }
+
+    /// Analyzes one file, returning a standalone result (parallel-safe).
+    fn scan_one(
+        packs: &PackRegistry,
+        parsers: &ParserRegistry,
+        cache: &Option<cache::Cache>,
+        path: &Path,
+    ) -> ScanResult {
+        let mut result = ScanResult::new(1);
         // Cache fast path: unchanged files reuse previous findings.
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = cache {
             if let Ok(hash) = cache::source_hash_of_file(path) {
                 if let Some(cached) = cache.get(&hash) {
                     for finding in cached {
                         result.findings.push(finding);
                     }
-                    return;
+                    return result;
                 }
             }
         }
@@ -70,21 +95,21 @@ impl Scanner {
             Ok(source) => source,
             Err(source) => {
                 result.push_issue(FileIssueKind::Read, path.to_path_buf(), source.to_string());
-                return;
+                return result;
             }
         };
 
         let language = Language::from_path(path);
-        let Some(parser) = self.parsers.parser_for(language) else {
+        let Some(parser) = parsers.parser_for(language) else {
             result.skipped_files += 1;
-            return;
+            return result;
         };
 
         let tree = match parser.parse(&source) {
             Ok(tree) => tree,
             Err(source) => {
                 result.push_issue(FileIssueKind::Parse, path.to_path_buf(), source.to_string());
-                return;
+                return result;
             }
         };
 
@@ -100,7 +125,7 @@ impl Scanner {
 
         let scanned: Vec<_> = {
             let mut findings = Vec::new();
-            for rule in self.packs.iter() {
+            for rule in packs.iter() {
                 if rule.languages().contains(&language) {
                     findings.extend(rule.check_parsed(&tree, &source, path));
                 }
@@ -111,7 +136,7 @@ impl Scanner {
             result.findings.push(finding.clone());
         }
 
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = cache {
             if let Ok(hash) = cache::source_hash_of_file(path) {
                 let mut findings = Findings::new();
                 for f in scanned {
@@ -120,11 +145,7 @@ impl Scanner {
                 let _ = cache.put(&hash, &findings);
             }
         }
-    }
-
-    /// Whether the scanner carries any loaded rules at all.
-    pub fn has_rules(&self) -> bool {
-        self.packs.count() > 0
+        result
     }
 }
 

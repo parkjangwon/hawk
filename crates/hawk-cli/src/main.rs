@@ -91,10 +91,7 @@ where
     let targets = if let Some(mode) = git_mode {
         let cwd = std::env::current_dir().expect("current directory should exist");
         match hawk_core::git::changed_files(&cwd, mode) {
-            Ok(files) => files
-                .into_iter()
-                .map(ScanTarget::File)
-                .collect::<Vec<_>>(),
+            Ok(files) => files.into_iter().map(ScanTarget::File).collect::<Vec<_>>(),
             Err(error) => return fatal(error.to_string()),
         }
     } else {
