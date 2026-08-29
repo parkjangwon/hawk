@@ -46,7 +46,7 @@ impl SyntaxTree {
     }
 
     pub(crate) fn root_node(&self) -> tree_sitter::Node<'_> {
-        self.tree.root_node()
+        self.root_node()
     }
 }
 
