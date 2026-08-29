@@ -43,6 +43,12 @@ pub struct Rule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternRule {
     pub regex: String,
+    /// Optional exclusion regex (Semgrep pattern-not-regex style): matches of
+    /// the primary regex whose text also matches this are discarded.
+    pub not_regex: Option<String>,
+    /// Optional replacement suggestion (Semgrep `fix` style), reported with
+    /// the finding for `--autofix`-style workflows.
+    pub fix: Option<String>,
 }
 
 /// Errors produced while loading or validating packs.
@@ -118,6 +124,9 @@ struct RawRule {
 #[derive(Debug, Deserialize)]
 struct RawPattern {
     regex: String,
+    #[serde(rename = "not-regex")]
+    not_regex: Option<String>,
+    fix: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +165,7 @@ impl RawRule {
 pub struct CompiledRule {
     pub def: Rule,
     compiled_regex: Option<regex::Regex>,
+    compiled_not_regex: Option<regex::Regex>,
 }
 
 impl CompiledRule {
@@ -169,9 +179,19 @@ impl CompiledRule {
             })?),
             None => None,
         };
+        let compiled_not_regex = match &def.pattern {
+            Some(pattern) => match &pattern.not_regex {
+                Some(not) => Some(regex::Regex::new(not).map_err(|error| {
+                    Box::new((def.clone(), format!("invalid not-regex: {error}")))
+                })?),
+                None => None,
+            },
+            None => None,
+        };
         Ok(Self {
             def,
             compiled_regex: run_regex,
+            compiled_not_regex,
         })
     }
 
@@ -195,6 +215,21 @@ impl CompiledRule {
         let language = self.def.languages.first().copied();
         if let Some(run) = &self.compiled_regex {
             for m in run.find_iter(source) {
+                if let Some(not) = &self.compiled_not_regex {
+                    // Semgrep-style `pattern-not-regex`: if the line carrying
+                    // this match also matches the exclusion, suppress it. This
+                    // makes not-regex useful for context-sensitive exceptions
+                    // (e.g. ignore a trailing 'safe' shellout form).
+                    let line_start = source[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let after = &source[m.end()..];
+                    let line_end = after
+                        .find('\n')
+                        .map(|i| m.end() + i)
+                        .unwrap_or(source.len());
+                    if not.is_match(&source[line_start..line_end]) {
+                        continue;
+                    }
+                }
                 let (line, column) = line_column(source, m.start());
                 let mut finding = Finding::new(
                     self.def.id.clone(),
@@ -215,6 +250,8 @@ impl CompiledRule {
                 .with_description(self.def.description.clone());
                 if let Some(recommendation) = &self.def.recommendation {
                     finding = finding.with_recommendation(recommendation.clone());
+                } else if let Some(fix) = &self.def.pattern.as_ref().and_then(|p| p.fix.as_ref()) {
+                    finding = finding.with_recommendation(format!("Suggested fix: {fix}"));
                 }
                 if let Some(category) = &self.def.category {
                     finding = finding.with_category(category.clone());
@@ -384,7 +421,11 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
             message: format!("rule '{}': {message}", raw.id),
         })?;
     let pattern = match capability {
-        "pattern" => raw.pattern.map(|p| PatternRule { regex: p.regex }),
+        "pattern" => raw.pattern.map(|p| PatternRule {
+            regex: p.regex,
+            not_regex: p.not_regex,
+            fix: p.fix,
+        }),
         _ => None, // query/taint capabilities load without a pattern engine for now
     };
 
@@ -760,5 +801,46 @@ mod tests {
         assert!(matches!(error, PackError::Validate { .. }));
 
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn not_regex_excludes_matching_text_and_fix_is_attached() {
+        // Build the rule directly (bypassing TOML escaping) to verify engine
+        // behavior deterministically.
+        let rule = CompiledRule::compile(Rule {
+            id: "rule.a".into(),
+            name: "Rule A".into(),
+            description: "d".into(),
+            recommendation: None,
+            category: None,
+            severity: Severity::High,
+            confidence: Confidence::High,
+            languages: vec![Language::Java],
+            cwe: None,
+            owasp: None,
+            pattern: Some(PatternRule {
+                regex: r"exec\(".to_string(),
+                not_regex: Some(r"'safe'".to_string()),
+                fix: Some("avoid exec".to_string()),
+            }),
+            taint: None,
+            source: PathBuf::from("inline"),
+        })
+        .expect("rule should compile");
+
+        // A call carrying the excluded literal is suppressed.
+        let excluded = rule.check("exec('safe')", Path::new("A.java"));
+        assert!(
+            excluded.is_empty(),
+            "not-regex should exclude the safe literal"
+        );
+
+        // A normal call fires and carries the fix as recommendation.
+        let fired = rule.check("exec(userInput);", Path::new("A.java"));
+        assert_eq!(fired.len(), 1);
+        assert_eq!(
+            fired[0].recommendation.as_deref(),
+            Some("Suggested fix: avoid exec")
+        );
     }
 }
