@@ -58,7 +58,7 @@ Report / Output
 - [x] Default ignore directories.
 - [ ] Language detection.
 - [x] Java parser integration.
-- [ ] Initial AST representation/adapters.
+- [x] Initial AST representation/adapters.
 - [ ] Basic pattern rules.
 - [ ] Basic AST rules.
 - [ ] Severity levels: Critical / High / Medium / Low / Info.
