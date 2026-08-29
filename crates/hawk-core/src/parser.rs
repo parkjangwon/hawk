@@ -2,7 +2,7 @@ use crate::language::Language;
 
 #[derive(Debug, Clone)]
 pub struct SyntaxTree {
-    tree: tree_sitter::Tree,
+    pub(crate) tree: tree_sitter::Tree,
 }
 
 impl SyntaxTree {
