@@ -451,6 +451,33 @@ pub struct PackRegistry {
     pub packs: Vec<(PackMeta, Vec<CompiledRule>)>,
 }
 
+/// Loads a single rule file (outside any pack), used by `hawk rule test`.
+pub fn load_single_rule_file(path: &Path) -> Result<CompiledRule, PackError> {
+    let content = std::fs::read_to_string(path).map_err(|e| PackError::Read {
+        path: path.to_path_buf(),
+        source: e.to_string(),
+    })?;
+    let rule = parse_rule_str(&content, path.to_path_buf())?;
+    CompiledRule::compile(rule).map_err(|error| {
+        let (rule, message) = *error;
+        PackError::Validate {
+            message: format!("rule '{}': {message}", rule.id),
+        }
+    })
+}
+
+impl CompiledRule {
+    /// The first declared language (used for report metadata and fixture choices).
+    pub fn primary_language(&self) -> Option<Language> {
+        self.def.languages.first().copied()
+    }
+
+    /// Runs this rule against a source string and returns findings (no file parsing).
+    pub fn check_source(&self, source: &str, path: &Path) -> Vec<Finding> {
+        self.check(source, path)
+    }
+}
+
 impl PackRegistry {
     pub fn new() -> Self {
         Self::default()

@@ -8,6 +8,5 @@ pub mod language;
 pub mod pack;
 pub mod parser;
 pub mod reporter;
-pub mod rule;
 pub mod scan;
 pub mod scope;
