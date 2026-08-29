@@ -289,6 +289,28 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
         }
     };
     let findings = rule.check_source(&source, std::path::Path::new(&fixture));
+
+    // Semgrep-style inline annotations take precedence when present.
+    let annotations = hawk_core::fixture::parse_annotations(&source);
+    if !annotations.is_empty() {
+        for annotation in &annotations {
+            let label = match annotation.kind {
+                hawk_core::fixture::AnnotationKind::RuleId => "ruleid",
+                hawk_core::fixture::AnnotationKind::Ok => "ok",
+            };
+            println!("  {} {label}: {}", annotation.line, annotation.rule_id);
+        }
+        let verdicts = hawk_core::fixture::evaluate(&annotations, &findings, |_| true);
+        if verdicts.is_empty() {
+            println!("ok: {} passed", rule.id());
+            return RunOutcome::Clean;
+        }
+        for verdict in &verdicts {
+            eprintln!("{}", hawk_core::fixture::verdict_line(verdict));
+        }
+        return RunOutcome::Fatal;
+    }
+
     let got = findings.len();
     println!("{}: {got} finding(s) against '{fixture}'", rule.id());
     for finding in findings.iter().take(10) {

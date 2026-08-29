@@ -6,6 +6,7 @@ pub mod cache;
 pub mod config;
 pub mod discovery;
 pub mod finding;
+pub mod fixture;
 pub mod git;
 pub mod language;
 pub mod pack;
