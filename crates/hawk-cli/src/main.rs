@@ -58,21 +58,29 @@ where
     // Parse options and positional paths.
     let mut git_mode: Option<GitScope> = None;
     let mut use_cache = true;
+    let mut format: Option<String> = None;
+    let mut output: Option<PathBuf> = None;
     let mut paths: Vec<PathBuf> = Vec::new();
-    for arg in &args {
+    let mut it = args.iter().peekable();
+    while let Some(arg) = it.next() {
         match arg.as_str() {
             "--changed" => git_mode = Some(GitScope::Changed),
             "--staged" => git_mode = Some(GitScope::Staged),
             "--no-cache" => use_cache = false,
+            "--format" => {
+                format = Some(match it.next() {
+                    Some(value) => value.clone(),
+                    None => return fatal("--format requires a value".to_string()),
+                });
+            }
+            "--output" | "-o" => {
+                output = Some(match it.next() {
+                    Some(value) => PathBuf::from(value),
+                    None => return fatal("--output requires a path".to_string()),
+                });
+            }
             "--" => {
-                // everything after -- is a positional path
-                let rest = args
-                    .iter()
-                    .skip_while(|a| *a != arg)
-                    .skip(1)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                paths.extend(rest.into_iter().map(PathBuf::from));
+                paths.extend(it.cloned().map(PathBuf::from));
                 break;
             }
             other if other.starts_with('-') => {
@@ -117,12 +125,33 @@ where
         scanner = scanner.with_cache(cwd.join(".hawk").join("cache"));
     }
 
+    let started = std::time::Instant::now();
     let result = match scanner.scan_targets(&targets) {
         Ok(result) => result,
         Err(error) => return fatal(error.to_string()),
     };
+    let duration = started.elapsed().as_millis();
 
-    print!("{}", TerminalReporter.render(&result));
+    let rendered = match format.as_deref() {
+        None | Some("terminal") | Some("text") => TerminalReporter.render(&result),
+        Some("json") => hawk_core::report::JsonReporter.render(&result, duration),
+        Some("sarif") => hawk_core::report::SarifReporter.render(&result, duration),
+        Some("html") => hawk_core::report::HtmlReporter.render(&result, duration),
+        Some(other) => {
+            return fatal(format!(
+                "unknown report format '{other}' (expected terminal, json, sarif, html)"
+            ))
+        }
+    };
+
+    match output {
+        Some(path) => {
+            if let Err(error) = std::fs::write(&path, rendered) {
+                return fatal(format!("unable to write report: {error}"));
+            }
+        }
+        None => print!("{rendered}"),
+    }
 
     if result.degraded() {
         RunOutcome::Degraded
@@ -139,7 +168,9 @@ fn fatal(message: String) -> RunOutcome {
 }
 
 fn print_help() {
-    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
+    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache
+  --format F     Report format: terminal (default), json, sarif, html
+  -o, --output   Write the report to a file instead of stdout\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
 }
 
 /// Dispatches the `hawk rule` subcommand family.
