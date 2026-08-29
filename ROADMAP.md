@@ -4,9 +4,11 @@ This roadmap records the current agreed direction for Hawk. It is intentionally 
 
 ## Phase 0 — Architecture & Design
 
-**Status: Current**
+**Status: Active**
 
-Before substantial implementation, settle the following interfaces:
+The architecture is being implemented incrementally. Open design decisions below must be resolved before the corresponding public contract is frozen. Do not block small, isolated implementation work unnecessarily.
+
+Before substantial implementation of each public subsystem, settle the following interfaces:
 
 - [ ] Define final architecture and crate/module boundaries.
 - [ ] Define the normalized Finding Model.
@@ -41,6 +43,31 @@ Rule Engine ← Rule Packs
 Finding Model
     ↓
 Report / Output
+```
+
+### Engineering constraints
+
+- TDD is mandatory for new behavior where practical.
+- Keep CLI, core analysis, rules, findings, and reporting independently testable.
+- Prefer small vertical slices over large rewrites.
+- Every security rule needs deterministic vulnerable/safe fixtures.
+- Preserve deterministic discovery, finding ordering, and fingerprints.
+- Parser/config/rule failures must be explicit; never silently report a clean scan.
+- Avoid speculative dependencies, services, databases, or abstractions.
+- No source-code network transmission by default.
+- AI/LLM services are never required for analysis.
+- Public CLI/config/rule/report contracts become compatibility-sensitive once released.
+- Performance changes should be backed by benchmarks or measurements.
+
+### Completion gate
+
+A roadmap item should only be checked when its implementation, relevant tests, documentation, and verification are complete. The expected local quality gate is:
+
+```bash
+cargo fmt --all -- --check
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+git diff --check
 ```
 
 ---

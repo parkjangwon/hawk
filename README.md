@@ -359,3 +359,113 @@ The goal is a **small, fast, local, free, extensible security analyzer for devel
 Hawk is currently in the **architecture and design phase**. Implementation should begin only after the core interfaces and schemas are sufficiently agreed upon.
 
 See [ROADMAP.md](ROADMAP.md) for the planned evolution.
+
+## Development Philosophy
+
+Hawk should be developed as a **small, composable security-analysis engine**, not as a collection of CLI features.
+
+### TDD is a project rule
+
+New behavior should be driven by tests. Prefer this cycle:
+
+```text
+Red → Green → Refactor → Verify
+```
+
+Every meaningful feature should have the smallest appropriate test layer:
+
+- **Unit tests** for pure domain logic and analysis components.
+- **Integration tests** for component boundaries and the scan pipeline.
+- **Fixture tests** for security rules using vulnerable and safe source examples.
+- **CLI/E2E tests** for user-visible behavior and exit-code contracts.
+
+Tests must be deterministic and must not require a network connection, cloud service, AI API, database, or developer-specific machine state.
+
+### Quality gates
+
+Before a change is considered complete, the project should pass at minimum:
+
+```bash
+cargo fmt --all -- --check
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+git diff --check
+```
+
+As CI evolves, these checks should become mandatory repository gates.
+
+### Small-step implementation
+
+Prefer narrow, independently verifiable changes over large rewrites. A feature should be implemented in vertical slices when practical:
+
+```text
+Domain → Test → Implementation → Integration → Verification
+```
+
+Do not add infrastructure, abstractions, dependencies, or configuration before a concrete requirement justifies them. Avoid speculative generalization.
+
+### Architecture boundaries
+
+Keep responsibilities explicit:
+
+- CLI handles arguments, presentation selection, and process-level concerns.
+- Core owns scanning, parsing, analysis, rules, findings, and report models.
+- Rules describe security intent; reusable analysis algorithms belong to the engine.
+- Reporters consume normalized results and do not perform security analysis.
+- Configuration and Rule Packs are data, not hidden application logic.
+
+Prefer dependency direction toward stable domain/core code. Avoid circular dependencies and avoid coupling the core engine to a particular output format or UI.
+
+### Determinism and reproducibility
+
+The same source, configuration, Rule Pack versions, and Hawk version should produce the same findings regardless of machine or execution order, except for explicitly documented metadata such as timestamps.
+
+File discovery, rule execution, and report ordering should therefore be deterministic. Finding fingerprints must remain stable across scans when the underlying finding has not materially changed.
+
+### Security analyzer quality
+
+A security scanner is only useful when developers trust its results. Therefore:
+
+- Prefer high-signal findings over noisy pattern counts.
+- Every rule should have a clear rationale and remediation guidance.
+- False positives should be treated as a first-class quality problem.
+- Rules should declare confidence when meaningful.
+- Security rules require regression fixtures.
+- A rule must not silently change severity or semantics without an intentional versioned change.
+- Parser failures must be observable and must never be silently treated as "no vulnerabilities".
+
+### Failure philosophy
+
+Hawk should fail **explicitly and safely**. An unreadable file, parser failure, invalid Rule Pack, or invalid configuration must not silently produce a misleading clean result.
+
+At the same time, one bad source file should not unnecessarily abort a whole project scan when the failure can be isolated and reported.
+
+### Backward compatibility
+
+Once the CLI, configuration schema, Rule Pack schema, Finding Model, report formats, or rule IDs become public, treat them as compatibility-sensitive APIs.
+
+Breaking changes should be deliberate, documented, and versioned. Internal implementation details may change freely when the public contracts remain intact.
+
+### Performance philosophy
+
+Performance is a feature, but not at the expense of correctness. Measure before optimizing. Prefer profiling and benchmarks over intuition.
+
+The intended progression is:
+
+```text
+Correctness → Determinism → Profiling → Optimization → Benchmark regression guard
+```
+
+Parallelism and caching should be introduced only where their complexity is justified by measured workloads.
+
+### Privacy by default
+
+Source code is sensitive. Hawk must not transmit source code, findings, telemetry, or project metadata anywhere by default. Any future network-enabled capability must be explicit, opt-in, documented, and isolated from the local analysis path.
+
+### AI independence
+
+AI may be an optional consumer of Hawk's output, but AI must not be a prerequisite for analysis. A local Hawk scan must remain complete and useful without an LLM, API key, network connection, or external agent.
+
+### Standards and attribution
+
+External standards such as Korean secure-coding guidance, CWE, and OWASP should be treated as references/mappings with appropriate attribution and licensing review. Hawk must not imply certification, endorsement, or official affiliation merely because a Rule Pack maps to an external standard.
