@@ -77,7 +77,7 @@ mod tests {
             .map(|node| node.kind().to_owned())
             .collect();
 
-        assert!(kinds.contains(&"class_declaration"));
+        assert!(kinds.iter().any(|kind| kind == "class_declaration"));
     }
 
     #[test]
