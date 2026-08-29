@@ -60,8 +60,8 @@ Report / Output
 - [x] Java parser integration.
 - [x] Initial AST representation/adapters.
 - [ ] Basic pattern rules.
-- [ ] Basic AST rules.
-- [ ] Severity levels: Critical / High / Medium / Low / Info.
+- [x] Basic AST rules.
+- [x] Severity levels: Critical / High / Medium / Low / Info.
 - [ ] Finding Model.
 - [ ] Useful terminal reporter.
 - [ ] Exit codes suitable for automation.

@@ -5,4 +5,5 @@ pub mod discovery;
 pub mod finding;
 pub mod language;
 pub mod parser;
+pub mod rule;
 pub mod scope;

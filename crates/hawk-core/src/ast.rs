@@ -26,6 +26,18 @@ impl<'tree> AstNode<'tree> {
         self.node.child_count()
     }
 
+    pub fn start_position(&self) -> tree_sitter::Point {
+        self.node.start_position()
+    }
+
+    pub fn end_position(&self) -> tree_sitter::Point {
+        self.node.end_position()
+    }
+
+    pub fn child_by_field_name(&self, name: &str) -> Option<Self> {
+        self.node.child_by_field_name(name).map(Self::new)
+    }
+
     pub fn children(&self) -> impl Iterator<Item = AstNode<'tree>> {
         let cursor = &mut self.node.walk();
         self.node
