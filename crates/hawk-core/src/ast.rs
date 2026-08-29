@@ -71,7 +71,11 @@ mod tests {
     fn children_can_be_traversed_without_exposing_tree_sitter() {
         let source = "class Example {}";
         let tree = JavaParser.parse(source).unwrap();
-        let kinds: Vec<_> = tree.root().children().map(|node| node.kind()).collect();
+        let kinds: Vec<_> = tree
+            .root()
+            .children()
+            .map(|node| node.kind().to_owned())
+            .collect();
 
         assert!(kinds.contains(&"class_declaration"));
     }
