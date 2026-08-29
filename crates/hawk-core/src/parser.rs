@@ -1,21 +1,18 @@
 use crate::language::Language;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceFile {
-    pub language: Language,
-    pub source: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyntaxNode {
-    pub kind: String,
-    pub start_byte: usize,
-    pub end_byte: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SyntaxTree {
-    pub root: SyntaxNode,
+    tree: tree_sitter::Tree,
+}
+
+impl SyntaxTree {
+    pub fn root_kind(&self) -> &str {
+        self.tree.root_node().kind()
+    }
+
+    pub fn has_error(&self) -> bool {
+        self.tree.root_node().has_error()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,13 +50,16 @@ impl Parser for JavaParser {
             return Err(ParseError::InvalidSource("source contains NUL byte".into()));
         }
 
-        Ok(SyntaxTree {
-            root: SyntaxNode {
-                kind: "compilation_unit".into(),
-                start_byte: 0,
-                end_byte: source.len(),
-            },
-        })
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(tree_sitter_java::language())
+            .map_err(|error| ParseError::InvalidSource(error.to_string()))?;
+
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| ParseError::InvalidSource("parser returned no syntax tree".into()))?;
+
+        Ok(SyntaxTree { tree })
     }
 }
 
@@ -87,13 +87,13 @@ mod tests {
     }
 
     #[test]
-    fn java_parser_produces_a_compilation_unit_root() {
-        let source = "class Example {}";
-        let tree = JavaParser.parse(source).expect("valid Java should parse");
+    fn java_parser_produces_a_real_compilation_unit_tree() {
+        let tree = JavaParser
+            .parse("class Example { int value = 1; }")
+            .expect("valid Java should parse");
 
-        assert_eq!(tree.root.kind, "compilation_unit");
-        assert_eq!(tree.root.start_byte, 0);
-        assert_eq!(tree.root.end_byte, source.len());
+        assert_eq!(tree.root_kind(), "program");
+        assert!(!tree.has_error());
     }
 
     #[test]
@@ -101,6 +101,15 @@ mod tests {
         let registry = ParserRegistry::default();
         assert!(registry.parser_for(Language::Java).is_some());
         assert!(registry.parser_for(Language::Python).is_none());
+    }
+
+    #[test]
+    fn malformed_java_is_reported_as_a_tree_with_errors() {
+        let tree = JavaParser
+            .parse("class Example {")
+            .expect("Tree-sitter should still produce an error tree");
+
+        assert!(tree.has_error());
     }
 
     #[test]

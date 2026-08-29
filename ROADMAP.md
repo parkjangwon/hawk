@@ -57,7 +57,7 @@ Report / Output
 - [x] Recursive file discovery.
 - [x] Default ignore directories.
 - [ ] Language detection.
-- [ ] Java parser integration.
+- [x] Java parser integration.
 - [ ] Initial AST representation/adapters.
 - [ ] Basic pattern rules.
 - [ ] Basic AST rules.

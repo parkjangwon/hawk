@@ -7,3 +7,7 @@ license.workspace = true
 [lib]
 name = "hawk_core"
 path = "src/lib.rs"
+
+[dependencies]
+tree-sitter = "0.20.10"
+tree-sitter-java = "0.20.2"
