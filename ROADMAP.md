@@ -54,8 +54,8 @@ Report / Output
 - [x] CLI command: `hawk .`.
 - [x] File and directory target resolution.
 - [x] Multiple path arguments.
-- [ ] Recursive file discovery.
-- [ ] Default ignore directories.
+- [x] Recursive file discovery.
+- [x] Default ignore directories.
 - [ ] Language detection.
 - [ ] Java parser integration.
 - [ ] Initial AST representation/adapters.
