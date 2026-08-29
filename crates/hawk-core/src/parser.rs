@@ -13,6 +13,10 @@ impl SyntaxTree {
     pub fn has_error(&self) -> bool {
         self.tree.root_node().has_error()
     }
+
+    pub(crate) fn raw_root_node(&self) -> tree_sitter::Node<'_> {
+        self.tree.root_node()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
