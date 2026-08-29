@@ -2,7 +2,9 @@ use std::{fmt, path::PathBuf};
 
 use crate::language::Language;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Severity {
     Info,
     Low,
@@ -26,7 +28,18 @@ impl fmt::Display for Severity {
 
 /// How certain the analyzer is that the reported issue endangers the programby default.
 /// Orthogonal to severity: severity describes impact, confidence describes certainty..
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum Confidence {
     Low,
     #[default]
@@ -45,7 +58,7 @@ impl fmt::Display for Confidence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceLocation {
     pub path: PathBuf,
     pub start_byte: usize,
@@ -58,7 +71,7 @@ pub struct SourceLocation {
 
 /// A normalized security finding.. See ADR-1002 for the field contract and the fingerprint
 /// algorithm..
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
     pub rule_id: String,
     pub rule_name: String,

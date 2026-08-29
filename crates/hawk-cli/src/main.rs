@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use hawk_core::{reporter::TerminalReporter, scan::Scanner, scope::resolve};
+use hawk_core::{
+    git::GitScope,
+    reporter::TerminalReporter,
+    scan::Scanner,
+    scope::{resolve, ScanTarget},
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -49,30 +54,72 @@ where
         println!("hawk {VERSION}");
         return RunOutcome::Version;
     }
-    if let Some(option) = args.iter().find(|arg| arg.starts_with('-')) {
-        return fatal(format!("unknown option '{option}'"));
+
+    // Parse options and positional paths.
+    let mut git_mode: Option<GitScope> = None;
+    let mut use_cache = true;
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for arg in &args {
+        match arg.as_str() {
+            "--changed" => git_mode = Some(GitScope::Changed),
+            "--staged" => git_mode = Some(GitScope::Staged),
+            "--no-cache" => use_cache = false,
+            "--" => {
+                // everything after -- is a positional path
+                let rest = args
+                    .iter()
+                    .skip_while(|a| *a != arg)
+                    .skip(1)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                paths.extend(rest.into_iter().map(PathBuf::from));
+                break;
+            }
+            other if other.starts_with('-') => {
+                return fatal(format!("unknown option '{other}'"));
+            }
+            _ => paths.push(PathBuf::from(arg)),
+        }
     }
 
-    let paths: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
-    let refs: Vec<_> = paths.iter().map(PathBuf::as_path).collect();
-    let targets = match resolve(&refs) {
-        Ok(targets) => targets,
-        Err(error) => {
-            return fatal(match error {
-                hawk_core::scope::ScopeError::PathNotFound(path) => {
-                    format!("path not found: {}", path.display())
-                }
-                hawk_core::scope::ScopeError::MetadataUnavailable { path } => {
-                    format!("unable to determine path type: {}", path.display())
-                }
-            });
-        }
-    };
-
-    let scanner = match Scanner::built_in() {
+    let mut scanner = match Scanner::built_in() {
         Ok(scanner) => scanner,
         Err(error) => return fatal(error.to_string()),
     };
+
+    // Git-aware modes resolve explicit paths to changed/staged files first.
+    let targets = if let Some(mode) = git_mode {
+        let cwd = std::env::current_dir().expect("current directory should exist");
+        match hawk_core::git::changed_files(&cwd, mode) {
+            Ok(files) => files
+                .into_iter()
+                .map(ScanTarget::File)
+                .collect::<Vec<_>>(),
+            Err(error) => return fatal(error.to_string()),
+        }
+    } else {
+        let refs: Vec<_> = paths.iter().map(PathBuf::as_path).collect();
+        match resolve(&refs) {
+            Ok(targets) => targets,
+            Err(error) => {
+                return fatal(match error {
+                    hawk_core::scope::ScopeError::PathNotFound(path) => {
+                        format!("path not found: {}", path.display())
+                    }
+                    hawk_core::scope::ScopeError::MetadataUnavailable { path } => {
+                        format!("unable to determine path type: {}", path.display())
+                    }
+                });
+            }
+        }
+    };
+
+    if use_cache {
+        // Cache lives in .hawk/cache under the project root (ADR-0003). Best-effort.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        scanner = scanner.with_cache(cwd.join(".hawk").join("cache"));
+    }
+
     let result = match scanner.scan_targets(&targets) {
         Ok(result) => result,
         Err(error) => return fatal(error.to_string()),
@@ -95,7 +142,7 @@ fn fatal(message: String) -> RunOutcome {
 }
 
 fn print_help() {
-    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [PATH ...]\n  hawk rule list\n  hawk rule explain <id>\n  hawk rule test <rule-file> <fixture-file> [--expected <count>]\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
+    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
 }
 
 /// Dispatches the `hawk rule` subcommand family.

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Hawk pre-commit hook example.
+# Install: put this file in .git/hooks/pre-commit (chmod +x), adjusting the
+# HAWK path if hawk is not on your PATH.
+#
+# Scans staged files; aborts the commit when findings are present.
+
+HAWK="hawk"
+if command -v "$HAWK" >/dev/null 2>&1; then
+    :
+else
+    # Fall back to a path you have installed
+    HAWK="/usr/local/bin/hawk"
+fi
+
+"$HAWK" --staged
+status=$?
+if [ "$status" -eq 2 ]; then
+    echo "Hawk found security findings above the exit threshold; aborting commit." >&2
+    echo "Review the report, fix the issues, or use --no-verify to bypass." >&2
+fi
+exit "$status"

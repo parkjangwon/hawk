@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::{
+    cache::{self, Cache},
     discovery::{discover, DiscoveryError},
     finding::Findings,
     language::Language,
@@ -14,6 +15,7 @@ use crate::{
 pub struct Scanner {
     parsers: ParserRegistry,
     packs: PackRegistry,
+    cache: Option<Cache>,
 }
 
 impl Scanner {
@@ -22,7 +24,16 @@ impl Scanner {
         Ok(Self {
             parsers: ParserRegistry::default(),
             packs,
+            cache: None,
         })
+    }
+
+    /// Enables the incremental cache rooted at the given directory
+    /// (the `.hawk/cache` path). The cache is best-effort: a full scan is
+    /// always correct if reads or writes fail.
+    pub fn with_cache(mut self, root: PathBuf) -> Self {
+        self.cache = Some(Cache::new(root));
+        self
     }
 
     pub fn scan_paths(&self, paths: &[&Path]) -> Result<ScanResult, ScanError> {
@@ -36,49 +47,79 @@ impl Scanner {
 
         for file in files {
             let path = file.path().to_path_buf();
-            let source = match fs::read_to_string(&path) {
-                Ok(source) => source,
-                Err(source) => {
-                    result.push_issue(FileIssueKind::Read, path.clone(), source.to_string());
-                    continue;
-                }
-            };
+            self.scan_one(&path, &mut result);
+        }
 
-            let language = Language::from_path(&path);
-            let Some(parser) = self.parsers.parser_for(language) else {
-                result.skipped_files += 1;
-                continue;
-            };
+        Ok(result)
+    }
 
-            let tree = match parser.parse(&source) {
-                Ok(tree) => tree,
-                Err(source) => {
-                    result.push_issue(FileIssueKind::Parse, path.clone(), source.to_string());
-                    continue;
-                }
-            };
-
-            if tree.has_error() {
-                // Analysis of a partially-parsed tree is incomplete; run rules anyway
-                // but surface the issue so a degraded result can never look likea clean one.
-                result.push_issue(
-                    FileIssueKind::Parse,
-                    path.clone(),
-                    "syntax tree contains errors; analysis is incomplete".to_string(),
-                );
-            }
-
-            for rule in self.packs.iter() {
-                if rule.languages().contains(&language) {
-                    let findings = rule.check_parsed(&tree, &source, &path);
-                    for finding in findings {
+    fn scan_one(&self, path: &Path, result: &mut ScanResult) {
+        // Cache fast path: unchanged files reuse previous findings.
+        if let Some(cache) = &self.cache {
+            if let Ok(hash) = cache::source_hash_of_file(path) {
+                if let Some(cached) = cache.get(&hash) {
+                    for finding in cached {
                         result.findings.push(finding);
                     }
+                    return;
                 }
             }
         }
 
-        Ok(result)
+        let source = match fs::read_to_string(path) {
+            Ok(source) => source,
+            Err(source) => {
+                result.push_issue(FileIssueKind::Read, path.to_path_buf(), source.to_string());
+                return;
+            }
+        };
+
+        let language = Language::from_path(path);
+        let Some(parser) = self.parsers.parser_for(language) else {
+            result.skipped_files += 1;
+            return;
+        };
+
+        let tree = match parser.parse(&source) {
+            Ok(tree) => tree,
+            Err(source) => {
+                result.push_issue(FileIssueKind::Parse, path.to_path_buf(), source.to_string());
+                return;
+            }
+        };
+
+        if tree.has_error() {
+            // Analysis of a partially-parsed tree is incomplete; run rules anyway
+            // but surface the issue so a degraded result can never look likea clean one.
+            result.push_issue(
+                FileIssueKind::Parse,
+                path.to_path_buf(),
+                "syntax tree contains errors; analysis is incomplete".to_string(),
+            );
+        }
+
+        let scanned: Vec<_> = {
+            let mut findings = Vec::new();
+            for rule in self.packs.iter() {
+                if rule.languages().contains(&language) {
+                    findings.extend(rule.check_parsed(&tree, &source, path));
+                }
+            }
+            findings
+        };
+        for finding in &scanned {
+            result.findings.push(finding.clone());
+        }
+
+        if let Some(cache) = &self.cache {
+            if let Ok(hash) = cache::source_hash_of_file(path) {
+                let mut findings = Findings::new();
+                for f in scanned {
+                    findings.push(f);
+                }
+                let _ = cache.put(&hash, &findings);
+            }
+        }
     }
 
     /// Whether the scanner carries any loaded rules at all.
