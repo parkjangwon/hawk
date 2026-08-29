@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -24,6 +24,7 @@ impl fmt::Display for Severity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
+    pub path: PathBuf,
     pub start_byte: usize,
     pub end_byte: usize,
     pub start_line: usize,
@@ -89,6 +90,7 @@ mod tests {
 
     fn location() -> SourceLocation {
         SourceLocation {
+            path: PathBuf::from("Example.java"),
             start_byte: 10,
             end_byte: 20,
             start_line: 2,

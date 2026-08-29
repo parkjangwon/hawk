@@ -9,7 +9,7 @@ pub trait Rule {
     fn description(&self) -> &'static str;
     fn severity(&self) -> Severity;
     fn languages(&self) -> &'static [Language];
-    fn check(&self, root: AstNode<'_>, source: &str) -> Findings;
+    fn check(&self, root: AstNode<'_>, source: &str, path: &std::path::Path) -> Findings;
 }
 
 #[derive(Debug, Default)]
@@ -32,14 +32,20 @@ impl Rule for JavaRuntimeExecRule {
         &[Language::Java]
     }
 
-    fn check(&self, root: AstNode<'_>, source: &str) -> Findings {
+    fn check(&self, root: AstNode<'_>, source: &str, path: &std::path::Path) -> Findings {
         let mut findings = Findings::new();
-        visit(root, source, &mut findings, self);
+        visit(root, source, path, &mut findings, self);
         findings
     }
 }
 
-fn visit(root: AstNode<'_>, source: &str, findings: &mut Findings, rule: &impl Rule) {
+fn visit(
+    root: AstNode<'_>,
+    source: &str,
+    path: &std::path::Path,
+    findings: &mut Findings,
+    rule: &impl Rule,
+) {
     if root.kind() == "method_invocation"
         && root
             .child_by_field_name("name")
@@ -54,20 +60,21 @@ fn visit(root: AstNode<'_>, source: &str, findings: &mut Findings, rule: &impl R
             rule.id(),
             rule.severity(),
             rule.description(),
-            location(&root),
+            location(&root, path),
         ));
     }
 
     for child in root.children() {
-        visit(child, source, findings, rule);
+        visit(child, source, path, findings, rule);
     }
 }
 
-fn location(node: &AstNode<'_>) -> SourceLocation {
+fn location(node: &AstNode<'_>, path: &std::path::Path) -> SourceLocation {
     let start = node.start_position();
     let end = node.end_position();
 
     SourceLocation {
+        path: path.to_path_buf(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
         start_line: start.row + 1,
@@ -104,7 +111,8 @@ mod tests {
         let source =
             "class Example { void run(String input) { Runtime.getRuntime().exec(input); } }";
         let tree = JavaParser.parse(source).unwrap();
-        let findings = JavaRuntimeExecRule.check(tree.root(), source);
+        let findings =
+            JavaRuntimeExecRule.check(tree.root(), source, std::path::Path::new("Example.java"));
 
         assert_eq!(findings.len(), 1);
         let finding = findings.iter().next().unwrap();
@@ -117,7 +125,8 @@ mod tests {
     fn runtime_exec_rule_ignores_unrelated_method_calls() {
         let source = "class Example { void run() { process.exec(); } }";
         let tree = JavaParser.parse(source).unwrap();
-        let findings = JavaRuntimeExecRule.check(tree.root(), source);
+        let findings =
+            JavaRuntimeExecRule.check(tree.root(), source, std::path::Path::new("Example.java"));
 
         assert!(findings.is_empty());
     }

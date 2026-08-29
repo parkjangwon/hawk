@@ -63,7 +63,7 @@ Report / Output
 - [x] Basic AST rules.
 - [x] Severity levels: Critical / High / Medium / Low / Info.
 - [x] Finding Model.
-- [ ] Useful terminal reporter.
+- [x] Useful terminal reporter.
 - [ ] Exit codes suitable for automation.
 
 ### MVP command examples
