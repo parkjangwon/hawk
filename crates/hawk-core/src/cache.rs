@@ -113,9 +113,11 @@ mod tests {
     use crate::finding::{Severity, SourceLocation};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fn temp_root() -> PathBuf {
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "hawk-cache-test-{}-{}",
+            "hawk-cache-test-{}-{}-{seq}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

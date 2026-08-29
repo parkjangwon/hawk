@@ -1,0 +1,16 @@
+id = "java.security.spring-sql-jdbc-template"
+name = "JdbcTemplate with dynamic query"
+description = "Spring JdbcTemplate queries built by string concatenation of user input are vulnerable to SQL injection just like raw JDBC."
+recommendation = "Use parameterized queries with JdbcTemplate (query(..., args)) or Spring Data derived queries; never concatenate input into the SQL string."
+category = "sql-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["java"]
+framework = "Spring"
+cwe = "CWE-89"
+owasp = "A03:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["escapeSql", "prepared", "setString"]
+sinks = ["jdbcTemplate.query", "jdbcTemplate.execute", "JdbcTemplate.queryForObject", "JdbcTemplate.update"]

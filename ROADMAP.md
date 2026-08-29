@@ -169,7 +169,7 @@ Python → Django / Flask / FastAPI
 - [x] TypeScript AST/semantic analysis.
 - [x] Python AST/semantic analysis.
 - [x] Go AST/semantic analysis.
-- [ ] Framework-aware rules where valuable.
+- [x] Framework-aware rules where valuable.
 
 ---
 

@@ -34,6 +34,8 @@ pub struct Rule {
     pub languages: Vec<Language>,
     pub cwe: Option<String>,
     pub owasp: Option<String>,
+    /// Framework this rule targets (e.g. Spring), for framework-aware rules.
+    pub framework: Option<String>,
     /// The regex pattern, when this rule is a pattern-based rule.
     pub pattern: Option<PatternRule>,
     /// The taint config, when this rule is a data-flow (taint) rule.
@@ -141,6 +143,7 @@ struct RawRule {
     languages: Vec<String>,
     cwe: Option<String>,
     owasp: Option<String>,
+    framework: Option<String>,
     pattern: Option<RawPattern>,
     query: Option<RawQuery>,
     taint: Option<RawTaint>,
@@ -290,6 +293,9 @@ impl CompiledRule {
                 }
                 if let Some(owasp) = &self.def.owasp {
                     finding = finding.with_owasp(owasp.clone());
+                }
+                if let Some(framework) = &self.def.framework {
+                    finding = finding.with_framework(framework.clone());
                 }
                 findings.push(finding);
             }
@@ -585,6 +591,7 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
         languages,
         cwe: raw.cwe,
         owasp: raw.owasp,
+        framework: raw.framework,
         pattern,
         taint,
         query,
@@ -666,6 +673,10 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                 (
                     "built-in:java/java.security.ssrf.rule.toml",
                     include_str!("../rules/java/java.security.ssrf.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.spring-query.rule.toml",
+                    include_str!("../rules/java/java.security.spring-query.rule.toml"),
                 ),
             ],
         ),
@@ -1015,6 +1026,7 @@ mod tests {
             languages: vec![Language::Java],
             cwe: None,
             owasp: None,
+            framework: None,
             pattern: Some(PatternRule {
                 regex: r"exec\(".to_string(),
                 not_regex: Some(r"'safe'".to_string()),
@@ -1055,6 +1067,7 @@ mod tests {
             languages: vec![Language::Java],
             cwe: None,
             owasp: None,
+            framework: None,
             pattern: None,
             taint: None,
             query: Some(QueryRule {
