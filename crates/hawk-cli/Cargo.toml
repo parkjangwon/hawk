@@ -1,0 +1,12 @@
+[package]
+name = "hawk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hawk"
+path = "src/main.rs"
+
+[dependencies]
+hawk-core = { path = "../hawk-core" }

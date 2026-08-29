@@ -49,11 +49,11 @@ Report / Output
 
 **Goal: a useful local scanner as one Rust binary.**
 
-- [ ] Rust workspace/crate structure.
-- [ ] CLI command: `hawk`.
-- [ ] CLI command: `hawk .`.
-- [ ] File and directory target resolution.
-- [ ] Multiple path arguments.
+- [x] Rust workspace/crate structure.
+- [x] CLI command: `hawk`.
+- [x] CLI command: `hawk .`.
+- [x] File and directory target resolution.
+- [x] Multiple path arguments.
 - [ ] Recursive file discovery.
 - [ ] Default ignore directories.
 - [ ] Language detection.
