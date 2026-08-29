@@ -1,0 +1,15 @@
+id = "java.security.command-injection"
+name = "Command injection via dynamic command"
+description = "A dynamically constructed command executed by the OS can enable command injection when input reaches it."
+recommendation = "Use ProcessBuilder with an argument list (never a shell string); validate and allowlist command inputs."
+category = "command-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["sanitize", "escapeCommand"]
+sinks = ["Runtime.getRuntime().exec", ".exec(", "ProcessBuilder"]

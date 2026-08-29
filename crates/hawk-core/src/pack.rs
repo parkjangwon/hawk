@@ -34,6 +34,8 @@ pub struct Rule {
     pub owasp: Option<String>,
     /// The regex pattern, when this rule is a pattern-based rule.
     pub pattern: Option<PatternRule>,
+    /// The taint config, when this rule is a data-flow (taint) rule.
+    pub taint: Option<crate::taint::TaintConfig>,
     /// Source file this rule was loaded from (for diagnostics).
     pub source: PathBuf,
 }
@@ -231,6 +233,33 @@ impl CompiledRule {
         }
         findings
     }
+
+    /// Executes the rule against a parsed syntax tree: pattern rules against the
+    /// raw text, taint rules with the data-flow engine.
+    pub fn check_parsed(
+        &self,
+        tree: &crate::parser::SyntaxTree,
+        source: &str,
+        path: &std::path::Path,
+    ) -> Vec<Finding> {
+        if let Some(taint) = &self.def.taint {
+            return crate::taint::analyze_java(tree, source, taint)
+                .iter()
+                .map(|tf| {
+                    crate::taint::to_finding(
+                        tf,
+                        &self.def.id,
+                        &self.def.name,
+                        &self.def.description,
+                        self.def.severity,
+                        self.def.confidence,
+                        path,
+                    )
+                })
+                .collect();
+        }
+        self.check(source, path)
+    }
 }
 
 fn line_column(source: &str, byte: usize) -> (usize, usize) {
@@ -359,6 +388,15 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
         _ => None, // query/taint capabilities load without a pattern engine for now
     };
 
+    let taint = match capability {
+        "taint" => raw.taint.map(|t| crate::taint::TaintConfig {
+            sources: t.sources,
+            sanitizers: t.sanitizers,
+            sinks: t.sinks,
+        }),
+        _ => None,
+    };
+
     Ok(Rule {
         id: raw.id,
         name: raw.name.unwrap_or_else(|| "rule".to_string()),
@@ -371,6 +409,7 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
         cwe: raw.cwe,
         owasp: raw.owasp,
         pattern,
+        taint,
         source: path,
     })
 }
@@ -428,6 +467,26 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                 (
                     "built-in:java/java.security.cookie.rule.toml",
                     include_str!("../rules/java/java.security.cookie.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.sql-injection.rule.toml",
+                    include_str!("../rules/java/java.security.sql-injection.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.command-injection.rule.toml",
+                    include_str!("../rules/java/java.security.command-injection.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.xss.rule.toml",
+                    include_str!("../rules/java/java.security.xss.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.path-traversal.rule.toml",
+                    include_str!("../rules/java/java.security.path-traversal.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.ssrf.rule.toml",
+                    include_str!("../rules/java/java.security.ssrf.rule.toml"),
                 ),
             ],
         ),

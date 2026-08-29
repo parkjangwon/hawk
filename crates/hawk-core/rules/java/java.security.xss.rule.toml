@@ -1,0 +1,15 @@
+id = "java.security.xss-response"
+name = "Reflected XSS via response output"
+description = "Writing user-controlled request data into an HTTP response body can create reflected cross-site scripting."
+recommendation = "Encode output contextually (HTML/attribute/JS), or use template engines with automatic escaping; validate and sanitize input."
+category = "xss"
+severity = "high"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-79"
+owasp = "A03:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["escapeHtml", "encodeHtml"]
+sinks = ["response.getWriter().write", ".write(", ".print(", "out.print"]

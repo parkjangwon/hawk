@@ -11,3 +11,4 @@ pub mod reporter;
 pub mod scan;
 pub mod scope;
 pub mod semantic;
+pub mod taint;

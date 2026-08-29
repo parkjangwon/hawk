@@ -1,0 +1,15 @@
+id = "java.security.path-traversal"
+name = "Path traversal in file access"
+description = "User-controlled input used in file paths can escape the intended directory (path traversal)."
+recommendation = "Use canonical paths and validate the resolved path stays inside the allowed base directory; avoid building paths from raw input."
+category = "path-traversal"
+severity = "high"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-22"
+owasp = "A01:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["canonicalize", "normalize", "sanitizePath"]
+sinks = ["new File(", "Paths.get(", "FileInputStream", "FileOutputStream"]

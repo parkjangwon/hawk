@@ -1,0 +1,15 @@
+id = "java.security.ssrf"
+name = "Server-side request forgery"
+description = "Server-side requests to URLs built from request data can enable SSRF, reaching internal networks and metadata endpoints."
+recommendation = "Maintain an allowlist of permitted target hosts; validate URL schemes and hosts; block access to internal/metadata ranges."
+category = "ssrf"
+severity = "high"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-918"
+owasp = "A10:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["validateUrl", "isAllowedHost"]
+sinks = ["URL(", ".openConnection()", "HttpURLConnection", "OkHttpClient"]

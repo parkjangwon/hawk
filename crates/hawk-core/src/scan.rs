@@ -70,8 +70,7 @@ impl Scanner {
 
             for rule in self.packs.iter() {
                 if rule.languages().contains(&language) {
-                    let findings = rule.check(&source, &path);
-                    let _ = tree.root(); // pattern rules operate on raw text for now
+                    let findings = rule.check_parsed(&tree, &source, &path);
                     for finding in findings {
                         result.findings.push(finding);
                     }

@@ -1,0 +1,15 @@
+id = "java.security.sql-injection"
+name = "SQL Injection via dynamic SQL"
+description = "SQL statements constructed by concatenating user-controlled input are vulnerable to SQL injection."
+recommendation = "Use prepared statements with parameterized queries (PreparedStatement) instead of string concatenation; validate and bind user input."
+category = "sql-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-89"
+owasp = "A03:2021"
+
+[taint]
+sources = ["getParameter", "getHeader", "getQueryString"]
+sanitizers = ["escapeSql", "sanitizeSql", "setString"]
+sinks = [".executeQuery(", ".execute(", ".executeUpdate(", "query("]
