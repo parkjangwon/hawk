@@ -1,0 +1,4 @@
+name = "java"
+version = "1.0.0"
+description = "Built-in security rules for Java."
+authors = ["Hawk Contributors"]

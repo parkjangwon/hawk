@@ -1,0 +1,13 @@
+id = "java.security.cookie-http-only"
+name = "Cookie without HttpOnly"
+description = "Cookies set without the HttpOnly flag are accessible to scripts, increasing the impact of XSS."
+recommendation = "Always set HttpOnly on cookies that do not require script access."
+category = "xss"
+severity = "medium"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-1004"
+owasp = "A05:2021"
+
+[pattern]
+regex = "new\\s+Cookie\\s*\\("

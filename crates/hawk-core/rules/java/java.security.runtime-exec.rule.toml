@@ -1,0 +1,13 @@
+id = "java.security.runtime-exec"
+name = "Runtime exec call"
+description = "Detects Runtime.exec calls that may execute operating-system commands."
+recommendation = "Avoid Runtime.exec where possible; prefer ProcessBuilder with a list of arguments, validate and allowlist inputs."
+category = "command-injection"
+severity = "high"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "Runtime\\.getRuntime\\(\\)\\.exec"

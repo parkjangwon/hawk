@@ -66,7 +66,11 @@ where
         }
     };
 
-    let result = match Scanner::built_in().scan_targets(&targets) {
+    let scanner = match Scanner::built_in() {
+        Ok(scanner) => scanner,
+        Err(error) => return fatal(error.to_string()),
+    };
+    let result = match scanner.scan_targets(&targets) {
         Ok(result) => result,
         Err(error) => return fatal(error.to_string()),
     };

@@ -1,0 +1,13 @@
+id = "java.security.process-builder"
+name = "ProcessBuilder with shell string"
+description = "ProcessBuilder started with a single command string may be subject to shell metacharacter interpretation when a shell is involved; prefer argument-list invocation."
+recommendation = "Pass a list of arguments to ProcessBuilder; never embed user input in a command line that will be interpreted by a shell."
+category = "command-injection"
+severity = "medium"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "new\\s+ProcessBuilder\\s*\\("

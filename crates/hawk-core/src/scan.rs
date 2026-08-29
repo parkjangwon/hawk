@@ -5,23 +5,24 @@ use crate::{
     discovery::{discover, DiscoveryError},
     finding::Findings,
     language::Language,
+    pack::{PackError, PackRegistry},
     parser::{ParseError, ParserRegistry},
-    rule::RuleRegistry,
     scope::{resolve, ScanTarget, ScopeError},
 };
 
 #[derive(Default)]
 pub struct Scanner {
     parsers: ParserRegistry,
-    rules: RuleRegistry,
+    packs: PackRegistry,
 }
 
 impl Scanner {
-    pub fn built_in() -> Self {
-        Self {
+    pub fn built_in() -> Result<Self, ScanError> {
+        let packs = PackRegistry::with_built_in().map_err(ScanError::Pack)?;
+        Ok(Self {
             parsers: ParserRegistry::default(),
-            rules: RuleRegistry::built_in(),
-        }
+            packs,
+        })
     }
 
     pub fn scan_paths(&self, paths: &[&Path]) -> Result<ScanResult, ScanError> {
@@ -67,16 +68,23 @@ impl Scanner {
                 );
             }
 
-            for rule in self.rules.iter() {
+            for rule in self.packs.iter() {
                 if rule.languages().contains(&language) {
-                    result
-                        .findings
-                        .extend(rule.check(tree.root(), &source, &path));
+                    let findings = rule.check(&source, &path);
+                    let _ = tree.root(); // pattern rules operate on raw text for now
+                    for finding in findings {
+                        result.findings.push(finding);
+                    }
                 }
             }
         }
 
         Ok(result)
+    }
+
+    /// Whether the scanner carries any loaded rules at all.
+    pub fn has_rules(&self) -> bool {
+        self.packs.count() > 0
     }
 }
 
@@ -129,6 +137,7 @@ pub enum ScanError {
     Discovery(DiscoveryError),
     ReadSource { path: PathBuf, source: String },
     Parse { path: PathBuf, source: ParseError },
+    Pack(PackError),
 }
 
 impl std::fmt::Display for ScanError {
@@ -147,6 +156,7 @@ impl std::fmt::Display for ScanError {
             Self::Parse { path, source } => {
                 write!(f, "unable to parse '{}': {source}", path.display())
             }
+            Self::Pack(error) => write!(f, "rule pack error: {error}"),
         }
     }
 }
@@ -202,7 +212,10 @@ mod tests {
             "class Example { void run(String input) { Runtime.getRuntime().exec(input); } }",
         );
 
-        let result = Scanner::built_in().scan_paths(&[path.as_path()]).unwrap();
+        let result = Scanner::built_in()
+            .unwrap()
+            .scan_paths(&[path.as_path()])
+            .unwrap();
 
         assert_eq!(result.discovered_files, 1);
         assert_eq!(result.skipped_files, 0);
@@ -216,7 +229,10 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.write("README.md", "Runtime.getRuntime().exec(input);");
 
-        let result = Scanner::built_in().scan_paths(&[path.as_path()]).unwrap();
+        let result = Scanner::built_in()
+            .unwrap()
+            .scan_paths(&[path.as_path()])
+            .unwrap();
 
         assert_eq!(result.discovered_files, 1);
         assert_eq!(result.skipped_files, 1);
@@ -230,7 +246,10 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.write("Broken.java", "class Example {");
 
-        let result = Scanner::built_in().scan_paths(&[path.as_path()]).unwrap();
+        let result = Scanner::built_in()
+            .unwrap()
+            .scan_paths(&[path.as_path()])
+            .unwrap();
 
         assert_eq!(result.discovered_files, 1);
         assert_eq!(result.issues.len(), 1);
@@ -243,6 +262,7 @@ mod tests {
     fn scan_pipeline_error_is_fatal_only_for_scope_and_discovery() {
         // Scope errors abort the whole scan: a missing path cannot be scanned.
         let err = Scanner::built_in()
+            .unwrap()
             .scan_paths(&[std::path::Path::new("definitely-missing-path")])
             .unwrap_err();
 

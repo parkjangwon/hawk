@@ -386,6 +386,65 @@ fn parse_severity(value: &str) -> Option<Severity> {
     }
 }
 
+/// Same as `parse_rule` but with an explicit source path (e.g. a virtual
+/// `include_str!` path) for diagnostics.
+fn parse_rule_str(content: &str, path: PathBuf) -> Result<Rule, PackError> {
+    let raw: RawRule = toml::from_str(content).map_err(|e| PackError::Parse {
+        path: path.clone(),
+        source: e.to_string(),
+    })?;
+    parse_rule(raw, path)
+}
+
+fn parse_manifest_str(content: &str, path: PathBuf) -> Result<PackMeta, PackError> {
+    let raw: RawManifest = toml::from_str(content).map_err(|e| PackError::Parse {
+        path,
+        source: e.to_string(),
+    })?;
+    Ok(PackMeta {
+        name: raw.name,
+        version: raw.version,
+        description: raw.description,
+        authors: raw.authors,
+    })
+}
+
+/// The built-in rule set embedded in the binary. Keep this list in sync with
+/// `rules/java/`; the loader is intentionally the single source of truth.
+pub fn built_in() -> Result<Vec<CompiledRule>, PackError> {
+    let meta = parse_manifest_str(
+        include_str!("../rules/java/pack.toml"),
+        PathBuf::from("built-in:java/pack.toml"),
+    )?;
+    let files: &[(&str, &str)] = &[
+        (
+            "built-in:java/java.security.runtime-exec.rule.toml",
+            include_str!("../rules/java/java.security.runtime-exec.rule.toml"),
+        ),
+        (
+            "built-in:java/java.security.process-builder.rule.toml",
+            include_str!("../rules/java/java.security.process-builder.rule.toml"),
+        ),
+        (
+            "built-in:java/java.security.cookie.rule.toml",
+            include_str!("../rules/java/java.security.cookie.rule.toml"),
+        ),
+    ];
+    let mut rules = Vec::with_capacity(files.len());
+    for (path, content) in files {
+        let rule = parse_rule_str(content, PathBuf::from(*path))?;
+        let compiled = CompiledRule::compile(rule).map_err(|error| {
+            let (rule, message) = *error;
+            PackError::Validate {
+                message: format!("built-in rule '{}': {message}", rule.id),
+            }
+        })?;
+        rules.push(compiled);
+    }
+    let _ = meta; // registry carries meta separately via packs(); keep simple
+    Ok(rules)
+}
+
 /// A registry of loaded, compiled rules in stable pack/file order.
 #[derive(Debug, Default)]
 pub struct PackRegistry {
@@ -395,6 +454,18 @@ pub struct PackRegistry {
 impl PackRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A registry preloaded with the built-in packs.
+    pub fn with_built_in() -> Result<Self, PackError> {
+        let mut registry = Self::new();
+        let meta = parse_manifest_str(
+            include_str!("../rules/java/pack.toml"),
+            PathBuf::from("built-in:java/pack.toml"),
+        )?;
+        let rules = built_in()?;
+        registry.packs.push((meta, rules));
+        Ok(registry)
     }
 
     /// Loads packs from directories, in order. Returns duplicates as an error.
