@@ -91,7 +91,7 @@ git diff --check
 - [x] Severity levels: Critical / High / Medium / Low / Info.
 - [x] Finding Model.
 - [x] Useful terminal reporter.
-- [ ] Exit codes suitable for automation.
+- [x] Exit codes suitable for automation.
 
 ### MVP command examples
 
