@@ -255,7 +255,8 @@ impl CompiledRule {
                 )
                 .with_confidence(self.def.confidence)
                 .with_rule_name(self.def.name.clone())
-                .with_description(self.def.description.clone());
+                .with_description(self.def.description.clone())
+                .with_code_snippet(line_text(source, m.start()));
                 if let Some(recommendation) = &self.def.recommendation {
                     finding = finding.with_recommendation(recommendation.clone());
                 } else if let Some(fix) = &self.def.pattern.as_ref().and_then(|p| p.fix.as_ref()) {
@@ -397,6 +398,17 @@ fn execute_query<'tree>(
         }
     }
     Ok(out)
+}
+
+/// The trimmed source line containing `byte` (used for code snippets).
+fn line_text(source: &str, byte: usize) -> String {
+    let start = source[..byte.min(source.len())]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let after = &source[byte.min(source.len())..];
+    let end = after.find('\n').map(|i| byte + i).unwrap_or(source.len());
+    source[start..end].trim().to_string()
 }
 
 fn line_column(source: &str, byte: usize) -> (usize, usize) {

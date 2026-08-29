@@ -58,6 +58,7 @@ pub struct FindingView {
     pub category: Option<String>,
     pub cwe: Option<String>,
     pub owasp: Option<String>,
+    pub code_snippet: Option<String>,
 }
 
 impl FindingView {
@@ -76,6 +77,7 @@ impl FindingView {
             category: finding.category.clone(),
             cwe: finding.cwe.clone(),
             owasp: finding.owasp.clone(),
+            code_snippet: finding.code_snippet.clone(),
         }
     }
 }
@@ -325,12 +327,18 @@ impl HtmlReporter {
 
         let mut body = String::new();
         for view in &views {
+            let snippet = view
+                .code_snippet
+                .as_deref()
+                .map(html_escape)
+                .unwrap_or_default();
             let _ = writeln!(
                 body,
-                "<tr><td>{sev}</td><td><code>{rule}</code></td><td>{msg}</td><td><code>{file}:{line}:{col}</code></td><td>{name}</td></tr>",
+                "<tr><td>{sev}</td><td><code>{rule}</code></td><td>{msg}<br><code>{snippet}</code></td><td><code>{file}:{line}:{col}</code></td><td>{name}</td></tr>",
                 sev = view.severity,
                 rule = view.rule_id,
                 msg = html_escape(&view.message),
+                snippet = snippet,
                 file = html_escape(&view.file),
                 line = view.line,
                 col = view.column,

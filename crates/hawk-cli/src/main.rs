@@ -82,9 +82,11 @@ where
                 };
                 fail_on_severity = Some(match parse_severity(&level) {
                     Some(s) => s,
-                    None => return fatal(format!(
+                    None => {
+                        return fatal(format!(
                         "unknown severity '{level}' (expected info, low, medium, high, critical)"
-                    )),
+                    ))
+                    }
                 });
             }
             "--format" => {
