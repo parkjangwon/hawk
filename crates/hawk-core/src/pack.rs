@@ -727,6 +727,22 @@ pub struct PackRegistry {
     pub packs: Vec<(PackMeta, Vec<CompiledRule>)>,
 }
 
+/// Validates a pack directory and returns its manifest metadata (used by
+/// `hawk rule validate`). Invalid packs fail loudly.
+pub fn validate_pack_dir(dir: &Path) -> Result<PackMeta, PackError> {
+    // Reuse the loader; any parse/validate error propagates.
+    let (meta, rules) = load_pack_dir(dir)?;
+    for rule in rules {
+        CompiledRule::compile(rule).map_err(|error| {
+            let (rule, message) = *error;
+            PackError::Validate {
+                message: format!("rule '{}': {message}", rule.id),
+            }
+        })?;
+    }
+    Ok(meta)
+}
+
 /// Loads a single rule file (outside any pack), used by `hawk rule test`.
 pub fn load_single_rule_file(path: &Path) -> Result<CompiledRule, PackError> {
     let content = std::fs::read_to_string(path).map_err(|e| PackError::Read {

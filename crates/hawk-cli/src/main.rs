@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use hawk_core::{
+    finding::Severity,
     git::GitScope,
     reporter::TerminalReporter,
     scan::Scanner,
@@ -49,6 +50,9 @@ where
     if args.first().map(String::as_str) == Some("baseline") {
         return run_baseline_command(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("config") {
+        return run_config_command(&args[1..]);
+    }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print_help();
         return RunOutcome::Help;
@@ -63,6 +67,7 @@ where
     let mut use_cache = true;
     let mut format: Option<String> = None;
     let mut output: Option<PathBuf> = None;
+    let mut fail_on_severity: Option<Severity> = None;
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
@@ -70,6 +75,18 @@ where
             "--changed" => git_mode = Some(GitScope::Changed),
             "--staged" => git_mode = Some(GitScope::Staged),
             "--no-cache" => use_cache = false,
+            "--fail-on-severity" => {
+                let level = match it.next() {
+                    Some(value) => value.clone(),
+                    None => return fatal("--fail-on-severity requires a severity".to_string()),
+                };
+                fail_on_severity = Some(match parse_severity(&level) {
+                    Some(s) => s,
+                    None => return fatal(format!(
+                        "unknown severity '{level}' (expected info, low, medium, high, critical)"
+                    )),
+                });
+            }
             "--format" => {
                 format = Some(match it.next() {
                     Some(value) => value.clone(),
@@ -158,10 +175,27 @@ where
 
     if result.degraded() {
         RunOutcome::Degraded
+    } else if let Some(minimum) = fail_on_severity {
+        if result.findings.iter().any(|f| f.severity >= minimum) {
+            RunOutcome::Findings
+        } else {
+            RunOutcome::Clean
+        }
     } else if !result.findings.is_empty() {
         RunOutcome::Findings
     } else {
         RunOutcome::Clean
+    }
+}
+
+fn parse_severity(value: &str) -> Option<Severity> {
+    match value {
+        "info" => Some(Severity::Info),
+        "low" => Some(Severity::Low),
+        "medium" => Some(Severity::Medium),
+        "high" => Some(Severity::High),
+        "critical" => Some(Severity::Critical),
+        _ => None,
     }
 }
 
@@ -173,6 +207,7 @@ fn fatal(message: String) -> RunOutcome {
 fn print_help() {
     println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache
   --format F     Report format: terminal (default), json, sarif, html
+  --fail-on-severity L  Only fail (exit 2) for findings at/above severity L
   -o, --output   Write the report to a file instead of stdout\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
 }
 
@@ -185,6 +220,7 @@ fn run_rule_command(args: &[String]) -> RunOutcome {
         "list" => run_rule_list(&args[1..]),
         "explain" => run_rule_explain(&args[1..]),
         "test" => run_rule_test(&args[1..]),
+        "validate" => run_rule_validate(&args[1..]),
         "help" | "--help" | "-h" => {
             println!("Usage: hawk rule <list|explain <id>|test <rule-file> <fixture>>");
             RunOutcome::Help
@@ -246,6 +282,41 @@ fn run_rule_explain(args: &[String]) -> RunOutcome {
         println!("  recommendation: {recommendation}");
     }
     RunOutcome::Clean
+}
+
+/// Validates one or more rule files or pack directories without scanning.
+fn run_rule_validate(args: &[String]) -> RunOutcome {
+    if args.is_empty() {
+        return fatal("rule validate requires a rule file or pack directory".into());
+    }
+    let mut failed = false;
+    for target in args {
+        let path = std::path::Path::new(target);
+        if path.is_dir() {
+            match hawk_core::pack::validate_pack_dir(path) {
+                Ok(meta) => {
+                    println!("{}: pack '{}' v{} — valid", target, meta.name, meta.version);
+                }
+                Err(error) => {
+                    eprintln!("{}: invalid — {error}", target);
+                    failed = true;
+                }
+            }
+        } else {
+            match hawk_core::pack::load_single_rule_file(path) {
+                Ok(rule) => println!("{}: '{}' — valid", target, rule.id()),
+                Err(error) => {
+                    eprintln!("{}: invalid — {error}", target);
+                    failed = true;
+                }
+            }
+        }
+    }
+    if failed {
+        RunOutcome::Fatal
+    } else {
+        RunOutcome::Clean
+    }
 }
 
 fn run_rule_test(args: &[String]) -> RunOutcome {
@@ -329,6 +400,34 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
         }
         _ => RunOutcome::Clean,
     }
+}
+
+/// Displays the effective configuration (defaults merged with hawk.toml).
+fn run_config_command(args: &[String]) -> RunOutcome {
+    if !args.is_empty() {
+        return fatal("config takes no arguments".into());
+    }
+    let config = match hawk_core::config::Config::load() {
+        Ok(config) => config,
+        Err(error) => return fatal(format!("config error: {error}")),
+    };
+    match &config.source {
+        Some(path) => println!("config source: {}", path.display()),
+        None => println!("config source: none (using defaults)"),
+    }
+    println!("include: {:?}", config.include);
+    println!("exclude: {:?}", config.exclude);
+    println!("packs:   {:?}", config.packs);
+    println!("pack-dirs: {:?}", config.pack_dirs);
+    println!(
+        "report:  format={:?} output={:?}",
+        config.report.format, config.report.output
+    );
+    match &config.policy.exit_on_severity {
+        Some(s) => println!("policy:  exit-on-severity={s}"),
+        None => println!("policy:  exit-on-severity=<any finding>"),
+    }
+    RunOutcome::Clean
 }
 
 /// Dispatches the `hawk baseline` subcommand family.
