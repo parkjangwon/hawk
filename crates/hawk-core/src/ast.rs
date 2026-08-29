@@ -26,7 +26,7 @@ impl<'tree> AstNode<'tree> {
         self.node.child_count()
     }
 
-    pub fn children(&self) -> impl Iterator<Item = Self> + 'tree {
+    pub fn children(&self) -> impl Iterator<Item = AstNode<'tree>> {
         let cursor = &mut self.node.walk();
         self.node
             .children(cursor)
@@ -35,7 +35,7 @@ impl<'tree> AstNode<'tree> {
             .into_iter()
     }
 
-    pub fn text(&self, source: &str) -> Option<&str> {
+    pub fn text<'source>(&self, source: &'source str) -> Option<&'source str> {
         source.get(self.start_byte()..self.end_byte())
     }
 }
@@ -46,7 +46,7 @@ impl SyntaxTree {
     }
 
     pub(crate) fn root_node(&self) -> tree_sitter::Node<'_> {
-        self.root_node()
+        self.raw_root_node()
     }
 }
 
