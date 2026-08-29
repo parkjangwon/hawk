@@ -40,14 +40,28 @@ hawk ./src/UserService.java
 - `hawk <file>` — scan one file.
 - Multiple files/directories should also be accepted eventually: `hawk ./src ./scripts`.
 
-Planned Git-oriented modes include:
+Git-oriented modes make Hawk fast for every-day development and useful alongside Git and AI coding agents:
 
 ```bash
-hawk --changed
-hawk --staged
+hawk --changed           # working-tree changes vs the index
+hawk --staged            # staged changes
+hawk --fail-on-severity high .   # exit 2 only for HIGH+ findings (CI-friendly)
+hawk --format sarif -o report.sarif .
 ```
 
-These modes are intended to make Hawk particularly useful alongside Git and AI coding agents: code can be generated or modified, then checked locally without sending the source to an external AI/SaaS service.
+Rule tooling:
+
+```bash
+hawk rule list
+hawk rule explain java.security.sql-injection
+hawk rule test my-rule.toml fixture.java      # Semgrep-style ruleid/ok + taint aware
+hawk rule validate ./my-pack
+hawk baseline create | status
+hawk config
+```
+
+These modes keep Hawk useful without sending the source to an external AI/SaaS
+service; analysis stays fully local.
 
 ## Architecture Direction
 
