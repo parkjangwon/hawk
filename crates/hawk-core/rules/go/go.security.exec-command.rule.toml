@@ -1,0 +1,13 @@
+id = "go.security.exec-command"
+name = "exec.Command execution"
+description = "exec.Command builds a command; when combined with user input this can enable command injection. Prefer argument lists and avoid building shell command strings."
+recommendation = "Pass arguments as separate parameters to exec.Command; do not concatenate user input into a command string; validate inputs."
+category = "command-injection"
+severity = "medium"
+confidence = "medium"
+languages = ["go"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "exec\\.Command\\s*\\("

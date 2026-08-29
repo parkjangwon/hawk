@@ -409,40 +409,88 @@ fn parse_manifest_str(content: &str, path: PathBuf) -> Result<PackMeta, PackErro
     })
 }
 
-/// The built-in rule set embedded in the binary. Keep this list in sync with
-/// `rules/java/`; the loader is intentionally the single source of truth.
-pub fn built_in() -> Result<Vec<CompiledRule>, PackError> {
-    let meta = parse_manifest_str(
-        include_str!("../rules/java/pack.toml"),
-        PathBuf::from("built-in:java/pack.toml"),
-    )?;
-    let files: &[(&str, &str)] = &[
+/// The built-in rule packs embedded in the binary, as (manifest, rules) pairs
+/// in a fixed order. Keep this list in sync with `rules/{java,js,python,go}`;
+/// the loader is intentionally the single source of truth.
+pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError> {
+    let packs: &[(&str, &[(&str, &str)])] = &[
         (
-            "built-in:java/java.security.runtime-exec.rule.toml",
-            include_str!("../rules/java/java.security.runtime-exec.rule.toml"),
+            include_str!("../rules/java/pack.toml"),
+            &[
+                (
+                    "built-in:java/java.security.runtime-exec.rule.toml",
+                    include_str!("../rules/java/java.security.runtime-exec.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.process-builder.rule.toml",
+                    include_str!("../rules/java/java.security.process-builder.rule.toml"),
+                ),
+                (
+                    "built-in:java/java.security.cookie.rule.toml",
+                    include_str!("../rules/java/java.security.cookie.rule.toml"),
+                ),
+            ],
         ),
         (
-            "built-in:java/java.security.process-builder.rule.toml",
-            include_str!("../rules/java/java.security.process-builder.rule.toml"),
+            include_str!("../rules/js/pack.toml"),
+            &[
+                (
+                    "built-in:js/javascript.security.eval.rule.toml",
+                    include_str!("../rules/js/javascript.security.eval.rule.toml"),
+                ),
+                (
+                    "built-in:js/javascript.security.inner-html.rule.toml",
+                    include_str!("../rules/js/javascript.security.inner-html.rule.toml"),
+                ),
+                (
+                    "built-in:js/javascript.security.child-process.rule.toml",
+                    include_str!("../rules/js/javascript.security.child-process.rule.toml"),
+                ),
+            ],
         ),
         (
-            "built-in:java/java.security.cookie.rule.toml",
-            include_str!("../rules/java/java.security.cookie.rule.toml"),
+            include_str!("../rules/python/pack.toml"),
+            &[
+                (
+                    "built-in:python/python.security.os-system.rule.toml",
+                    include_str!("../rules/python/python.security.os-system.rule.toml"),
+                ),
+                (
+                    "built-in:python/python.security.pickle.rule.toml",
+                    include_str!("../rules/python/python.security.pickle.rule.toml"),
+                ),
+                (
+                    "built-in:python/python.security.subprocess-shell.rule.toml",
+                    include_str!("../rules/python/python.security.subprocess-shell.rule.toml"),
+                ),
+            ],
+        ),
+        (
+            include_str!("../rules/go/pack.toml"),
+            &[(
+                "built-in:go/go.security.exec-command.rule.toml",
+                include_str!("../rules/go/go.security.exec-command.rule.toml"),
+            )],
         ),
     ];
-    let mut rules = Vec::with_capacity(files.len());
-    for (path, content) in files {
-        let rule = parse_rule_str(content, PathBuf::from(*path))?;
-        let compiled = CompiledRule::compile(rule).map_err(|error| {
-            let (rule, message) = *error;
-            PackError::Validate {
-                message: format!("built-in rule '{}': {message}", rule.id),
-            }
-        })?;
-        rules.push(compiled);
+
+    let mut loaded = Vec::with_capacity(packs.len());
+    for (manifest, files) in packs {
+        let meta = parse_manifest_str(manifest, PathBuf::from("built-in"))?;
+        let mut rules = Vec::with_capacity(files.len());
+        for (path, content) in *files {
+            let rule = parse_rule_str(content, PathBuf::from(*path))?;
+            let compiled = CompiledRule::compile(rule).map_err(|error| {
+                let (rule, message) = *error;
+                PackError::Validate {
+                    message: format!("built-in rule '{}': {message}", rule.id),
+                }
+            })?;
+            rules.push(compiled);
+        }
+        loaded.push((meta, rules));
     }
-    let _ = meta; // registry carries meta separately via packs(); keep simple
-    Ok(rules)
+    Ok(loaded)
 }
 
 /// A registry of loaded, compiled rules in stable pack/file order.
@@ -485,14 +533,8 @@ impl PackRegistry {
 
     /// A registry preloaded with the built-in packs.
     pub fn with_built_in() -> Result<Self, PackError> {
-        let mut registry = Self::new();
-        let meta = parse_manifest_str(
-            include_str!("../rules/java/pack.toml"),
-            PathBuf::from("built-in:java/pack.toml"),
-        )?;
-        let rules = built_in()?;
-        registry.packs.push((meta, rules));
-        Ok(registry)
+        let packs = built_in_packs()?;
+        Ok(Self { packs })
     }
 
     /// Loads packs from directories, in order. Returns duplicates as an error.

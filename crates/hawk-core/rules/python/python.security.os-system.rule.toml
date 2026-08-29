@@ -1,0 +1,13 @@
+id = "python.security.os-system"
+name = "os.system shell execution"
+description = "os.system executes a command through the shell; user input reaching it enables OS command injection."
+recommendation = "Use subprocess with a list of arguments and shell=False; never build shell strings from untrusted input."
+category = "command-injection"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "os\\.system\\s*\\("

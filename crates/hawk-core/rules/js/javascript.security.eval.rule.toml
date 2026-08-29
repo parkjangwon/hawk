@@ -1,0 +1,13 @@
+id = "javascript.security.eval"
+name = "Eval with potentially dynamic input"
+description = "eval() executes a string as code; dynamic input reaching eval enables code injection."
+recommendation = "Avoid eval entirely; use JSON.parse or dedicated parsers for data, and refactor to data-driven logic."
+category = "code-injection"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-95"
+owasp = "A03:2021"
+
+[pattern]
+regex = "\\beval\\s*\\("

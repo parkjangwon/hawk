@@ -1,0 +1,4 @@
+name = "javascript"
+version = "1.0.0"
+description = "Built-in security rules for JavaScript and TypeScript."
+authors = ["Hawk Contributors"]

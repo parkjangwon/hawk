@@ -1,0 +1,13 @@
+id = "python.security.subprocess-shell"
+name = "subprocess with shell=True"
+description = "Passing shell=True to subprocess functions interprets args through the shell; untrusted input can inject commands."
+recommendation = "Prefer shell=False with an argument list; if a shell is unavoidable, validate inputs strictly."
+category = "command-injection"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "subprocess\\.(Popen|call|run|check_output|check_call)\\s*\\([^)]*shell\\s*=\\s*True"

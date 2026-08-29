@@ -1,0 +1,13 @@
+id = "python.security.pickle"
+name = "Unpickle of untrusted data"
+description = "pickle.loads can execute arbitrary code when data is untrusted; unsafe deserialization is a code-execution vector."
+recommendation = "Avoid pickling/unpickling of untrusted data; use a safe serialization format such as JSON or msgpack with schema validation."
+category = "insecure-deserialization"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-502"
+owasp = "A08:2021"
+
+[pattern]
+regex = "pickle\\.(loads|load)\\s*\\("

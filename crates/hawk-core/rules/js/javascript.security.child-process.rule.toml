@@ -1,0 +1,13 @@
+id = "javascript.security.child-process"
+name = "child_process execution"
+description = "Executing a command string through child_process can lead to OS command injection when inputs are user-controlled."
+recommendation = "Prefer execFile/spawn with an argument array; never build shell strings from user input."
+category = "command-injection"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "require\\s*\\(\\s*['\"]child_process['\"]\\s*\\)"

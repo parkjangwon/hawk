@@ -1,0 +1,13 @@
+id = "javascript.security.unsafe-innerhtml"
+name = "innerHTML with dynamic concatenation"
+description = "Assigning to innerHTML with string concatenation or template literals can inject HTML/script when inputs are user-controlled."
+recommendation = "Use textContent instead of innerHTML, or build the DOM with createElement and set text values."
+category = "xss"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-79"
+owasp = "A03:2021"
+
+[pattern]
+regex = "innerHTML\\s*=\\s*[^\"']"

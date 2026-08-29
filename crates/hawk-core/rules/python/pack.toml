@@ -1,0 +1,4 @@
+name = "python"
+version = "1.0.0"
+description = "Built-in security rules for Python."
+authors = ["Hawk Contributors"]
