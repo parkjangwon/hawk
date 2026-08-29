@@ -10,7 +10,7 @@ The architecture is being implemented incrementally. Open design decisions below
 
 Before substantial implementation of each public subsystem, settle the following interfaces:
 
-- [ ] Define final architecture and crate/module boundaries.
+- [x] Define final architecture and crate/module boundaries.
 - [x] Define the normalized Finding Model.
 - [x] Define the Report Model.
 - [x] Define the Rule DSL / TOML schema.
@@ -22,7 +22,7 @@ Before substantial implementation of each public subsystem, settle the following
 - [x] Define include/exclude/ignore semantics.
 - [x] Decide parser technology and language-specific AST adapters.
 - [ ] Decide licensing and attribution requirements for external rule standards.
-- [ ] Document which Korean secure-coding standards/rules can be implemented and how they are attributed.
+- [x] Document which Korean secure-coding standards/rules can be implemented and how they are attributed.
 - [x] Keep optional future storage extensibility in mind without introducing a database.
 
 ### Guiding architecture

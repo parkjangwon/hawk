@@ -81,7 +81,24 @@ Report Engine
     └── PDF
 ```
 
-The core implementation is expected to be written in **Rust**. Language parsers should preferably use an established parsing technology such as Tree-sitter rather than implementing complete language parsers from scratch.
+The core implementation is **Rust**, and language parsers use Tree-sitter grammars.
+
+```text
+hawk-cli (crates/hawk-cli)
+  ├─ main.rs        CLI: args, subcommands (rule, baseline, config), exit codes
+  └─ hawk-core (crates/hawk-core)
+      ├─ scope.rs    path/argument → File|Directory targets
+      ├─ discovery.rs deterministic recursive traversal (ignored dirs, no symlinks)
+      ├─ language.rs extension → Language (java/js/ts/py/go)
+      ├─ parser.rs, ast.rs  Tree-sitter behind SyntaxTree/AstNode adapters
+      ├─ semantic.rs symbol collection (types/functions/variables)
+      ├─ taint.rs     intraprocedural source→sanitizer→sink engine (Java)
+      ├─ pack.rs      rule packs (pattern/query/taint capabilities), DSL loader
+      ├─ config.rs    hawk.toml discovery + parsing + precedence
+      ├─ cache.rs, git.rs, baseline.rs  incrementality and baselining
+      ├─ reporter.rs  terminal reporter (human)
+      └─ report.rs    JSON / SARIF 2.1.0 / HTML report models
+```
 
 ## Analysis Model
 

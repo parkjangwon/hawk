@@ -376,7 +376,14 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
             return fatal(format!("unable to read fixture '{fixture}': {error}"));
         }
     };
-    let findings = rule.check_source(&source, std::path::Path::new(&fixture));
+    // Taint/query rules operate on the syntax tree; pattern rules on text.
+    // Always prefer the parsed path when a parser exists for the fixture.
+    let findings = match parse_fixture_for_language(&source, &fixture) {
+        Some((tree, _language)) => {
+            rule.check_parsed(&tree, &source, std::path::Path::new(&fixture))
+        }
+        None => rule.check_source(&source, std::path::Path::new(&fixture)),
+    };
 
     // Semgrep-style inline annotations take precedence when present.
     let annotations = hawk_core::fixture::parse_annotations(&source);
@@ -447,6 +454,21 @@ fn run_config_command(args: &[String]) -> RunOutcome {
     RunOutcome::Clean
 }
 
+/// Parses fixture source into a syntax tree when a parser exists for its
+/// language; returns (tree, language). `None` for unknown languages.
+fn parse_fixture_for_language(
+    source: &str,
+    fixture: &str,
+) -> Option<(hawk_core::parser::SyntaxTree, hawk_core::language::Language)> {
+    let language = hawk_core::language::Language::from_path(std::path::Path::new(fixture));
+    if language == hawk_core::language::Language::Unknown {
+        return None;
+    }
+    let registry = hawk_core::parser::ParserRegistry::default();
+    let parser = registry.parser_for(language)?;
+    let tree = parser.parse(source).ok()?;
+    Some((tree, language))
+}
 /// Dispatches the `hawk baseline` subcommand family.
 fn run_baseline_command(args: &[String]) -> RunOutcome {
     let Some(sub) = args.first() else {
