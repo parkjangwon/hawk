@@ -82,6 +82,10 @@ impl Findings {
     pub fn iter(&self) -> impl Iterator<Item = &Finding> {
         self.findings.iter()
     }
+
+    pub fn extend(&mut self, findings: Findings) {
+        self.findings.extend(findings.findings);
+    }
 }
 
 #[cfg(test)]
