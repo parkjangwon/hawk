@@ -65,6 +65,13 @@ pub struct PatternRule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryRule {
     pub tree_sitter: String,
+    /// Capture name (without `@`) whose node marks the finding location. When
+    /// set, each query match reports exactly the anchored node; when unset,
+    /// every captured node is reported (legacy behavior).
+    pub anchor: Option<String>,
+    /// Matches whose anchored text also matches this regex are discarded
+    /// (query-rule counterpart of pattern `not-regex`).
+    pub not_regex: Option<String>,
 }
 
 /// Errors produced while loading or validating packs.
@@ -271,6 +278,8 @@ impl CompiledRule {
                 tree.raw_root_node(),
                 source,
                 &query.tree_sitter,
+                query.anchor.as_deref(),
+                query.not_regex.as_deref(),
                 self.def.languages.first().copied(),
             ) {
                 Ok(matches) => {
@@ -345,10 +354,19 @@ impl CompiledRule {
 }
 
 /// Runs a tree-sitter query against a syntax tree and returns matching nodes.
+///
+/// With `anchor`, each query match contributes exactly the anchored capture's
+/// node (the finding location); without it, every capture is reported. Nodes
+/// whose text matches `not_regex` are discarded, and identical spans are
+/// reported once. `#eq?`/`#match?`/`#any-of?` predicates are evaluated here
+/// rather than by the tree-sitter crate, whose match iterator misbehaves when
+/// a query carries text predicates (empty captures, runaway matches).
 fn execute_query<'tree>(
     root: tree_sitter::Node<'tree>,
     source: &str,
     query_source: &str,
+    anchor: Option<&str>,
+    not_regex: Option<&str>,
     language: Option<Language>,
 ) -> Result<Vec<tree_sitter::Node<'tree>>, String> {
     use tree_sitter::StreamingIterator as _;
@@ -365,16 +383,198 @@ fn execute_query<'tree>(
         Language::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
         Language::Unknown => return Err("unsupported language".into()),
     };
-    let query = tree_sitter::Query::new(&ts_language, query_source).map_err(|e| e.to_string())?;
+    let (clean_query, predicates) = split_predicates(query_source);
+    let query = tree_sitter::Query::new(&ts_language, &clean_query).map_err(|e| e.to_string())?;
+    let not_regex = not_regex
+        .map(|pattern| regex::Regex::new(pattern).map_err(|e| format!("invalid not-regex: {e}")))
+        .transpose()?;
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(&query, root, source.as_bytes());
-    let mut out = Vec::new();
+    let mut out: Vec<tree_sitter::Node<'tree>> = Vec::new();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     while let Some(m) = matches.next() {
-        for capture in m.captures {
-            out.push(capture.node);
+        if !predicates_match(&query, m, &predicates, source) {
+            continue;
+        }
+        let captured: Vec<tree_sitter::Node<'tree>> =
+            m.captures.iter().map(|capture| capture.node).collect();
+        // With an anchor, only the anchored node is a finding site; the other
+        // captures exist to constrain the pattern (e.g. `@arg` filters).
+        let sites: Vec<tree_sitter::Node<'tree>> = match anchor {
+            Some(anchor) => {
+                let anchored = m
+                    .captures
+                    .iter()
+                    .find(|capture| query.capture_names()[capture.index as usize] == anchor);
+                match anchored {
+                    Some(node) => vec![node.node],
+                    None => continue,
+                }
+            }
+            None => captured,
+        };
+        for node in sites {
+            let text = node.utf8_text(source.as_bytes()).unwrap_or_default();
+            if not_regex.as_ref().is_some_and(|re| re.is_match(text)) {
+                continue;
+            }
+            if seen.insert((node.start_byte(), node.end_byte())) {
+                out.push(node);
+            }
         }
     }
     Ok(out)
+}
+
+/// A `#eq?`/`#match?`/`#any-of?`-style predicate declared in a query.
+struct Predicate {
+    operator: String,
+    capture: String,
+    /// String literal arguments; the compiled regex when operator is a match.
+    values: Vec<String>,
+    regex: Option<regex::Regex>,
+}
+
+/// Splits `(#operator @capture "arg" ...)` predicates out of a query string
+/// and returns the clean query plus the parsed predicates. The predicate forms
+/// supported mirror tree-sitter's text predicates.
+fn split_predicates(query_source: &str) -> (String, Vec<Predicate>) {
+    let mut stripped = String::with_capacity(query_source.len());
+    let mut predicates = Vec::new();
+    let chars: Vec<char> = query_source.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '(' && chars.get(index + 1) == Some(&'#') {
+            // Scan to the balanced closing paren, respecting string quotes.
+            let mut depth = 0i32;
+            let mut in_quote = false;
+            let mut end = index;
+            while end < chars.len() {
+                let character = chars[end];
+                if in_quote {
+                    if character == '\\' {
+                        end += 1;
+                    } else if character == '"' {
+                        in_quote = false;
+                    }
+                } else {
+                    match character {
+                        '"' => in_quote = true,
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                end += 1;
+            }
+            let text: String = chars[index..end].iter().collect();
+            if let Some(predicate) = parse_predicate(&text) {
+                predicates.push(predicate);
+            }
+            stripped.push(' ');
+            index = end;
+        } else {
+            stripped.push(chars[index]);
+            index += 1;
+        }
+    }
+    (stripped, predicates)
+}
+
+fn parse_predicate(text: &str) -> Option<Predicate> {
+    let pattern = regex::Regex::new(
+        r#"^\(\s*#(?P<op>[a-z?-]+)\s+@(?P<cap>[a-zA-Z_0-9]+)(?P<vals>(?:\s+"(?:[^"\\]|\\.)*")*)\s*\)$"#,
+    )
+    .ok()?;
+    let captures = pattern.captures(text)?;
+    // Normalize `eq?`/`match?` to `eq`/`match` for the evaluation arms.
+    let operator = captures
+        .name("op")?
+        .as_str()
+        .trim_end_matches('?')
+        .to_string();
+    let capture = captures.name("cap")?.as_str().to_string();
+    let values = regex::Regex::new(r#""((?:[^"\\]|\\.)*)""#)
+        .ok()?
+        .captures_iter(captures.name("vals")?.as_str())
+        .filter_map(|value| value.get(1))
+        .map(|value| value.as_str().to_string())
+        .collect::<Vec<_>>();
+    let regex = if matches!(operator.as_str(), "match" | "not-match") {
+        values
+            .first()
+            .and_then(|value| regex::Regex::new(value).ok())
+    } else {
+        None
+    };
+    Some(Predicate {
+        operator,
+        capture,
+        values,
+        regex,
+    })
+}
+
+/// Evaluates the query's predicates against one match. A capture that appears
+/// several times must satisfy the predicate at every occurrence; a predicate
+/// whose capture is absent passes (matching tree-sitter semantics).
+fn predicates_match(
+    query: &tree_sitter::Query,
+    m: &tree_sitter::QueryMatch,
+    predicates: &[Predicate],
+    source: &str,
+) -> bool {
+    for predicate in predicates {
+        let texts: Vec<&str> = m
+            .captures
+            .iter()
+            .filter(|capture| query.capture_names()[capture.index as usize] == predicate.capture)
+            .filter_map(|capture| capture.node.utf8_text(source.as_bytes()).ok())
+            .collect();
+        let passes = match predicate.operator.as_str() {
+            "eq" => !texts.is_empty() && texts.iter().all(|text| *text == predicate.values[0]),
+            "not-eq" => texts.is_empty() || texts.iter().all(|text| *text != predicate.values[0]),
+            "match" => {
+                !texts.is_empty()
+                    && predicate
+                        .regex
+                        .as_ref()
+                        .is_some_and(|re| texts.iter().all(|text| re.is_match(text)))
+            }
+            "not-match" => {
+                texts.is_empty()
+                    || predicate
+                        .regex
+                        .as_ref()
+                        .is_some_and(|re| texts.iter().all(|text| !re.is_match(text)))
+            }
+            "any-of" => {
+                !texts.is_empty()
+                    && texts
+                        .iter()
+                        .all(|text| predicate.values.iter().any(|value| value == text))
+            }
+            "not-any-of" => {
+                texts.is_empty()
+                    || texts
+                        .iter()
+                        .all(|text| !predicate.values.iter().any(|value| value == text))
+            }
+            // Unknown or structural predicates (`set!`, `is?`, ...) are
+            // ignored rather than silently rejecting every match.
+            _ => true,
+        };
+        if !passes {
+            return false;
+        }
+    }
+    true
 }
 
 /// The trimmed source line containing `byte` (used for code snippets).
@@ -527,6 +727,31 @@ impl PackRegistry {
                     material.push('\0');
                     if let Some(not_regex) = &pattern.not_regex {
                         material.push_str(not_regex);
+                    }
+                }
+                if let Some(query) = &rule.def.query {
+                    material.push_str(&query.tree_sitter);
+                    material.push('\0');
+                    if let Some(anchor) = &query.anchor {
+                        material.push_str(anchor);
+                        material.push('\0');
+                    }
+                    if let Some(not_regex) = &query.not_regex {
+                        material.push_str(not_regex);
+                    }
+                }
+                if let Some(taint) = &rule.def.taint {
+                    for source in &taint.sources {
+                        material.push_str(source);
+                        material.push('\0');
+                    }
+                    for sanitizer in &taint.sanitizers {
+                        material.push_str(sanitizer);
+                        material.push('\0');
+                    }
+                    for sink in &taint.sinks {
+                        material.push_str(sink);
+                        material.push('\0');
                     }
                 }
             }
@@ -732,6 +957,8 @@ mod tests {
             taint: None,
             query: Some(QueryRule {
                 tree_sitter: "(method_invocation) @call".into(),
+                anchor: None,
+                not_regex: None,
             }),
             source: PathBuf::from("inline"),
         })
@@ -751,6 +978,52 @@ mod tests {
             "expected two query matches, got {}",
             findings.len()
         );
+    }
+
+    #[test]
+    fn query_anchor_selects_the_finding_node_and_not_regex_filters_matches() {
+        let query_rule = CompiledRule::compile(Rule {
+            id: "java.security.dynamic-classload".into(),
+            name: "Dynamic class loading".into(),
+            description: "Reflection with a non-literal class name".into(),
+            recommendation: None,
+            category: Some("reflection".into()),
+            severity: Severity::Medium,
+            confidence: Confidence::Medium,
+            languages: vec![Language::Java],
+            cwe: None,
+            owasp: None,
+            framework: None,
+            pattern: None,
+            taint: None,
+            query: Some(QueryRule {
+                tree_sitter: r#"
+(method_invocation
+  object: (identifier) @object
+  name: (identifier) @name
+  arguments: (argument_list) @args
+) @call
+(#eq? @name "forName")
+"#
+                .into(),
+                anchor: Some("call".into()),
+                not_regex: Some("forName\\s*\\(\\s*[\"']".into()),
+            }),
+            source: PathBuf::from("inline"),
+        })
+        .expect("query rule should compile");
+
+        let parser = crate::parser::TreeSitterParser {
+            language: Language::Java,
+        };
+        // Literal class name is filtered out by not-regex; the variable-driven
+        // call is anchored at the whole method_invocation.
+        let source = "class A { void m(String n) { Class.forName(\"a.B\"); Class.forName(n); } }";
+        let tree = parser.parse(source).expect("java should parse");
+
+        let findings = query_rule.check_parsed(&tree, source, Path::new("A.java"));
+        assert_eq!(findings.len(), 1, "literal reflection must be filtered");
+        assert!(findings[0].message.contains("Dynamic class loading"));
     }
 
     #[test]

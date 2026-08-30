@@ -1,0 +1,25 @@
+id = "korea.py.unsalted-hash"
+name = "Password hashed without a salt"
+description = "보안기능 - 솔트 없는 해시(나-14): hashlib 강한 해시를 솔트 없이 단일 인자로 적용하면 레인보우 테이블 공격에 취약하다."
+recommendation = "비밀번호 저장 시 hashlib.pbkdf2_hmac, scrypt, bcrypt 등 솔트가 내장된 키 유도 함수를 사용한다."
+category = "unsalted-hash"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-759"
+owasp = "A02:2021"
+
+[query]
+tree-sitter = """
+(call
+  function: (attribute
+    object: (identifier) @module
+    attribute: (identifier) @func)
+  arguments: (argument_list
+    (expression) @arg)
+) @call
+(#eq? @module "hashlib")
+(#match? @func "^(sha256|sha224|sha384|sha512|sha3_256|sha3_384|sha3_512|blake2b|blake2s)$")
+"""
+anchor = "call"
+not-regex = "[+]"

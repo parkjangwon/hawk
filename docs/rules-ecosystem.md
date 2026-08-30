@@ -47,7 +47,8 @@ fix = "new java.util.SecureRandom()" # reported as a "Suggested fix"
 | Capability | What it matches | Notes |
 |-----------|-----------------|-------|
 | `[pattern]` | A regex over the raw source text | Fast, simple |
-| `[query]`  | A tree-sitter S-expression AST pattern | `tree-sitter = "(method_invocation) @call"`
+| `[query]`  | A tree-sitter S-expression AST pattern | `tree-sitter = "(method_invocation) @call"`, `anchor = "call"`, `not-regex = "..."`, `(#eq? @name "forName")` predicates |
+| `[taint]`  | Data-flow sources → sanitizers → sinks | `sources`/`sanitizers`/`sinks` string lists |
 | `[taint]`  | Data-flow sources → sanitizers → sinks | `sources`/`sanitizers`/`sinks` string lists |
 
 ## Rule IDs

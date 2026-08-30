@@ -65,8 +65,11 @@ struct RawPattern {
 
 #[derive(Debug, Deserialize)]
 struct RawQuery {
-    #[allow(dead_code)]
-    tree_sitter: String, // slotted for Phase 3 (AST/query capability)
+    #[serde(rename = "tree-sitter")]
+    tree_sitter: String,
+    anchor: Option<String>,
+    #[serde(rename = "not-regex")]
+    not_regex: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +224,8 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
     let query = match capability {
         "query" => raw.query.map(|q| QueryRule {
             tree_sitter: q.tree_sitter,
+            anchor: q.anchor,
+            not_regex: q.not_regex,
         }),
         _ => None,
     };
@@ -597,6 +602,18 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                 (
                     "built-in:rules/korea/korea.py.xss.rule.toml",
                     include_str!("../rules/korea/korea.py.xss.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.java.reflection.rule.toml",
+                    include_str!("../rules/korea/korea.java.reflection.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.unsalted-hash.rule.toml",
+                    include_str!("../rules/korea/korea.py.unsalted-hash.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.plaintext-transport.rule.toml",
+                    include_str!("../rules/korea/korea.py.plaintext-transport.rule.toml"),
                 ),
             ],
         ),

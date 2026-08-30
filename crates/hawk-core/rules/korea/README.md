@@ -56,6 +56,7 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 | `korea.java.debug-code` | 바-2 제거되지 않고 남은 디버그 코드 | info | CWE-489 / A04 |
 | `korea.java.unsafe-api` | 사-2 취약한 API 사용 | medium | CWE-676 / A04 |
 | `korea.java.raw-socket` | 사-2 취약한 API 사용(직접 소켓) | medium | CWE-676 / A04 |
+| `korea.java.reflection` | 사-2 취약한 API 사용(리플렉션 동적 클래스 로딩) | medium | CWE-470 / A03 |
 
 > `(java pack)` 표시 항목은 동일 탐지 로직이 `java` 팩에 먼저 존재하는
 > 매핑 항목입니다(중복 탐지를 피하기 위해 korea 팩에 중복 정의하지 않음).
@@ -121,6 +122,8 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 |---------|------|----------|-------------|
 | `korea.py.weak-crypto` | 나-4 취약한 암호화 알고리즘 사용 | high | CWE-327 / A02 |
 | `korea.py.weak-random` | 나-8 적절하지 않은 난수 값 사용 | medium | CWE-330 / A02 |
+| `korea.py.plaintext-transport` | 나-6 중요정보 평문 전송(HTTP/FTP/Telnet/SMTP) | high | CWE-319 / A02 |
+| `korea.py.unsalted-hash` | 나-14 솔트 없는 해시(SHA-2 계열 단일 인자) | high | CWE-759 / A02 |
 | `korea.py.toctou` | 다-1 경쟁조건(TOCTOU) | medium | CWE-367 / A04 |
 | `korea.py.infinite-loop` | 다-2 종료되지 않는 반복문·재귀 | medium | CWE-835 / A04 |
 | `korea.py.error-message-info` | 라-1 오류 메시지 정보노출 | medium | CWE-209 / A01 |
@@ -149,7 +152,8 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 ## Limitations
 
 - 가이드의 모든 항목이 정적 패턴으로 탐지 가능한 것은 아닙니다(가-6 파일 업로드,
-  가-11 CSRF, 나-5 중요정보 평문 저장, 나-14 솔트 없는 해시 등은 설계·런타임
-  판단이 필요하여 미구현).
+  가-11 CSRF, 나-5 중요정보 평문 저장 등은 설계·런타임
+  판단이 필요하여 미구현). 솔트 없는 해시(나-14)는 단일 인자 hashlib 호출을
+  탐지하며, 솔트 연결(`+ salt`)·KDF(pbkdf2_hmac 등)는 제외한다.
 - Regex·휴리스틱 taint 기반이며, 정밀도(오탐 억제)를 우선합니다.
 - Java 중심이며, `comment-sensitive-info`는 다중 언어를 지원합니다.

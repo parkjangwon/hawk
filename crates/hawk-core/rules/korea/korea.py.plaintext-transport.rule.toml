@@ -1,0 +1,13 @@
+id = "korea.py.plaintext-transport"
+name = "Sensitive data sent over a plaintext channel"
+description = "보안기능 - 중요정보 평문 전송(나-6): HTTP/FTP/Telnet/SMTP 등 평문 프로토콜로 요청하면 전송 구간에서 정보가 노출된다."
+recommendation = "HTTPS/TLS 기반 프로토콜(requests https, smtplib.SMTP_SSL, ftplib.FTP_TLS 등)을 사용한다."
+category = "plaintext-transport"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-319"
+owasp = "A02:2021"
+
+[pattern]
+regex = "(requests|httpx)\\.(get|post|put|delete|request|stream)\\s*\\([^)]*[\"']http://|urllib\\.request\\.(urlopen|Request)\\s*\\([^)]*[\"']http://|urlopen\\s*\\([^)]*[\"']http://|smtplib\\.SMTP\\s*\\(|ftplib\\.FTP\\s*\\(|telnetlib\\.Telnet\\s*\\(|http\\.client\\.HTTPConnection\\s*\\(|xmlrpc\\.client\\.ServerProxy\\s*\\([^)]*[\"']http://"

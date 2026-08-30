@@ -1,0 +1,22 @@
+id = "korea.java.reflection"
+name = "Dynamic class loading via reflection"
+description = "API 오용 - 리플렉션을 통한 동적 클래스 로딩: Class.forName에 문자열 리터럴이 아닌 가변 입력을 넘기면 의도하지 않은 클래스 로딩·우회 위험이 있다."
+recommendation = "클래스 이름을 화이트리스트로 검증하거나 리플렉션 대신 직접 참조를 사용한다."
+category = "reflection"
+severity = "medium"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-470"
+owasp = "A03:2021"
+
+[query]
+tree-sitter = """
+(method_invocation
+  object: (identifier) @object
+  name: (identifier) @name
+  arguments: (argument_list) @args
+) @call
+(#eq? @name "forName")
+"""
+anchor = "call"
+not-regex = "forName\\s*\\(\\s*[\"']"
