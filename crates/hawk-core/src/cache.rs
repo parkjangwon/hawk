@@ -56,11 +56,20 @@ pub struct CacheEntry {
 #[derive(Debug, Clone)]
 pub struct Cache {
     root: PathBuf,
+    namespace: String,
 }
 
 impl Cache {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            namespace: CACHE_SCHEMA.to_string(),
+        }
+    }
+
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
     }
 
     fn path_for(&self, cache_key: &str) -> PathBuf {
@@ -71,11 +80,11 @@ impl Cache {
     }
 
     pub fn get(&self, source_path: &Path, source_hash: &str) -> Option<Vec<Finding>> {
-        let cache_key = cache_key(source_path, source_hash);
+        let cache_key = cache_key(&self.namespace, source_path, source_hash);
         let path = self.path_for(&cache_key);
         let content = std::fs::read_to_string(&path).ok()?;
         let entry: CacheEntry = serde_json::from_str(&content).ok()?;
-        if entry.schema != CACHE_SCHEMA
+        if entry.schema != self.namespace
             || entry.source_hash != source_hash
             || entry.source_path != source_path.to_string_lossy()
         {
@@ -91,12 +100,12 @@ impl Cache {
         findings: &Findings,
     ) -> Result<(), CacheError> {
         let entry = CacheEntry {
-            schema: CACHE_SCHEMA.to_string(),
+            schema: self.namespace.clone(),
             source_hash: source_hash.to_string(),
             source_path: source_path.to_string_lossy().into_owned(),
             findings: findings.iter().cloned().collect(),
         };
-        let cache_key = cache_key(source_path, source_hash);
+        let cache_key = cache_key(&self.namespace, source_path, source_hash);
         let path = self.path_for(&cache_key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CacheError {
@@ -112,11 +121,11 @@ impl Cache {
     }
 }
 
-fn cache_key(path: &Path, source_hash: &str) -> String {
+fn cache_key(namespace: &str, path: &Path, source_hash: &str) -> String {
     hash_bytes(
         format!(
             "{}\\0{}\\0{}",
-            CACHE_SCHEMA,
+            namespace,
             path.to_string_lossy(),
             source_hash
         )

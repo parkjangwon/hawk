@@ -35,7 +35,8 @@ impl Scanner {
     /// (the `.hawk/cache` path). The cache is best-effort: a full scan is
     /// always correct if reads or writes fail.
     pub fn with_cache(mut self, root: PathBuf) -> Self {
-        self.cache = Some(Cache::new(root));
+        let namespace = self.packs.cache_namespace();
+        self.cache = Some(Cache::new(root).with_namespace(namespace));
         self
     }
 
@@ -64,6 +65,8 @@ impl Scanner {
             .collect();
 
         let mut result = ScanResult::new(files.len());
+        result.rule_count = self.packs.count();
+        result.pack_names = self.packs.pack_names();
         for file_result in per_file {
             result.skipped_files += file_result.skipped_files;
             result.issues.extend(file_result.issues);
@@ -185,6 +188,8 @@ pub struct ScanResult {
     pub skipped_files: usize,
     pub issues: Vec<FileIssue>,
     pub findings: Findings,
+    pub rule_count: usize,
+    pub pack_names: Vec<String>,
 }
 
 impl ScanResult {

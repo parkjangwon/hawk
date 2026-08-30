@@ -30,13 +30,8 @@ impl ReportMetadata {
         Self {
             hawk_version: env!("CARGO_PKG_VERSION").to_string(),
             timestamp: now_rfc3339(),
-            rule_packs: vec![
-                "java".into(),
-                "javascript".into(),
-                "python".into(),
-                "go".into(),
-            ],
-            rule_count: 0,
+            rule_packs: result.pack_names.clone(),
+            rule_count: result.rule_count,
             files_scanned: result.discovered_files,
             files_skipped: result.skipped_files,
             duration_ms,
@@ -444,6 +439,8 @@ mod tests {
                 message: "parse failed".into(),
             }],
             findings,
+            rule_count: 1,
+            pack_names: vec!["test".into()],
         }
     }
 
@@ -497,6 +494,8 @@ mod tests {
             skipped_files: 0,
             issues: vec![],
             findings,
+            rule_count: 1,
+            pack_names: vec!["test".into()],
         };
         let html = HtmlReporter.render(&result, 1);
         assert!(html.contains("&lt;script&gt;"));

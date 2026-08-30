@@ -68,6 +68,20 @@ impl<'a> State<'a> {
     }
 
     fn walk(&mut self, node: AstNode<'_>) {
+        // Taint is intraprocedural. Save and restore state around each method
+        // so a tainted variable in one method cannot leak into a sibling method.
+        if matches!(
+            node.kind(),
+            "method_declaration" | "constructor_declaration" | "function_definition"
+        ) {
+            let saved = self.tainted.clone();
+            for child in node.children() {
+                self.walk(child);
+            }
+            self.tainted = saved;
+            return;
+        }
+
         match node.kind() {
             "local_variable_declaration" => self.handle_local_declaration(node),
             "assignment_expression" => self.handle_assignment(node),
@@ -160,7 +174,7 @@ impl<'a> State<'a> {
             let tainted = self
                 .tainted
                 .iter()
-                .filter(|t| text.contains(t.as_str()))
+                .filter(|t| contains_identifier(&text, t))
                 .map(String::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -192,23 +206,77 @@ impl<'a> State<'a> {
     }
 }
 
+fn line_text(source: &str, byte: usize) -> String {
+    let byte = byte.min(source.len());
+    let start = source[..byte].rfind('\n').map_or(0, |index| index + 1);
+    let end = source[byte..]
+        .find('\n')
+        .map_or(source.len(), |index| byte + index);
+    source[start..end].trim().to_string()
+}
+
 fn is_tainted_text(text: &str, tainted_vars: &HashSet<String>) -> bool {
-    tainted_vars.iter().any(|var| text.contains(var.as_str()))
+    tainted_vars
+        .iter()
+        .any(|var| contains_identifier(text, var))
+}
+
+fn contains_identifier(text: &str, identifier: &str) -> bool {
+    if identifier.is_empty() {
+        return false;
+    }
+    let mut offset = 0;
+    while let Some(relative) = text[offset..].find(identifier) {
+        let start = offset + relative;
+        let end = start + identifier.len();
+        let before_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !is_identifier_character(character));
+        let after_ok = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|character| !is_identifier_character(character));
+        if before_ok && after_ok {
+            return true;
+        }
+        offset = end;
+        if offset >= text.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn is_identifier_character(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaintMetadata<'a> {
+    pub rule_id: &'a str,
+    pub rule_name: &'a str,
+    pub description: &'a str,
+    pub recommendation: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub framework: Option<&'a str>,
+    pub cwe: Option<&'a str>,
+    pub owasp: Option<&'a str>,
+    pub language: Option<Language>,
+    pub severity: Severity,
+    pub confidence: Confidence,
 }
 
 /// Builds a normal Finding from a taint finding plus rule metadata.
 pub fn to_finding(
     taint: &TaintFinding,
-    rule_id: &str,
-    rule_name: &str,
-    description: &str,
-    severity: Severity,
-    confidence: Confidence,
+    source: &str,
+    metadata: TaintMetadata<'_>,
     path: &std::path::Path,
 ) -> Finding {
-    Finding::new(
-        rule_id,
-        severity,
+    let mut finding = Finding::new(
+        metadata.rule_id,
+        metadata.severity,
         format!(
             "Tainted data from {src} reached sink {sink}.",
             src = taint.tainted,
@@ -224,11 +292,29 @@ pub fn to_finding(
             end_column: taint.start_column + (taint.end_byte - taint.start_byte),
         },
     )
-    .with_confidence(confidence)
-    .with_rule_name(rule_name)
-    .with_description(description)
-    .with_category("taint")
-    .with_language(Language::Java)
+    .with_confidence(metadata.confidence)
+    .with_rule_name(metadata.rule_name)
+    .with_description(metadata.description)
+    .with_code_snippet(line_text(source, taint.start_byte));
+    if let Some(value) = metadata.recommendation {
+        finding = finding.with_recommendation(value);
+    }
+    if let Some(value) = metadata.category {
+        finding = finding.with_category(value);
+    }
+    if let Some(value) = metadata.framework {
+        finding = finding.with_framework(value);
+    }
+    if let Some(value) = metadata.cwe {
+        finding = finding.with_cwe(value);
+    }
+    if let Some(value) = metadata.owasp {
+        finding = finding.with_owasp(value);
+    }
+    if let Some(value) = metadata.language {
+        finding = finding.with_language(value);
+    }
+    finding
 }
 
 #[cfg(test)]
@@ -299,6 +385,14 @@ class X {
         let findings = analyze_java(&tree, source, &sqli_config());
 
         assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn identifier_matching_does_not_confuse_prefixes() {
+        let mut tainted = HashSet::new();
+        tainted.insert("id".to_string());
+        assert!(is_tainted_text("execute(id)", &tainted));
+        assert!(!is_tainted_text("execute(identity)", &tainted));
     }
 
     #[test]

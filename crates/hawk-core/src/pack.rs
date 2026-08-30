@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
+    cache::CACHE_SCHEMA,
     finding::{Confidence, Finding, Severity, SourceLocation},
     language::Language,
 };
@@ -317,11 +318,20 @@ impl CompiledRule {
                 .map(|tf| {
                     crate::taint::to_finding(
                         tf,
-                        &self.def.id,
-                        &self.def.name,
-                        &self.def.description,
-                        self.def.severity,
-                        self.def.confidence,
+                        source,
+                        crate::taint::TaintMetadata {
+                            rule_id: &self.def.id,
+                            rule_name: &self.def.name,
+                            description: &self.def.description,
+                            recommendation: self.def.recommendation.as_deref(),
+                            category: self.def.category.as_deref(),
+                            framework: self.def.framework.as_deref(),
+                            cwe: self.def.cwe.as_deref(),
+                            owasp: self.def.owasp.as_deref(),
+                            language: self.def.languages.first().copied(),
+                            severity: self.def.severity,
+                            confidence: self.def.confidence,
+                        },
                         path,
                     )
                 })
@@ -339,30 +349,45 @@ impl CompiledRule {
                         .iter()
                         .map(|node| {
                             let pos = node.start_position();
-                            Finding::new(
-                                self.def.id.clone(),
-                                self.def.severity,
-                                self.def.name.clone(),
-                                SourceLocation {
-                                    path: path.to_path_buf(),
-                                    start_byte: node.start_byte(),
-                                    end_byte: node.end_byte(),
-                                    start_line: pos.row + 1,
-                                    start_column: pos.column + 1,
-                                    end_line: pos.row + 1,
-                                    end_column: pos.column + 1,
-                                },
-                            )
-                            .with_confidence(self.def.confidence)
-                            .with_rule_name(self.def.name.clone())
-                            .with_description(self.def.description.clone())
-                            .with_language(
-                                self.def
-                                    .languages
-                                    .first()
-                                    .copied()
-                                    .unwrap_or(Language::Unknown),
-                            )
+                            {
+                                let mut finding = Finding::new(
+                                    self.def.id.clone(),
+                                    self.def.severity,
+                                    self.def.name.clone(),
+                                    SourceLocation {
+                                        path: path.to_path_buf(),
+                                        start_byte: node.start_byte(),
+                                        end_byte: node.end_byte(),
+                                        start_line: pos.row + 1,
+                                        start_column: pos.column + 1,
+                                        end_line: node.end_position().row + 1,
+                                        end_column: node.end_position().column + 1,
+                                    },
+                                )
+                                .with_confidence(self.def.confidence)
+                                .with_rule_name(self.def.name.clone())
+                                .with_description(self.def.description.clone())
+                                .with_code_snippet(line_text(source, node.start_byte()));
+                                if let Some(value) = self.def.category.as_deref() {
+                                    finding = finding.with_category(value);
+                                }
+                                if let Some(value) = self.def.recommendation.as_deref() {
+                                    finding = finding.with_recommendation(value);
+                                }
+                                if let Some(value) = self.def.framework.as_deref() {
+                                    finding = finding.with_framework(value);
+                                }
+                                if let Some(value) = self.def.cwe.as_deref() {
+                                    finding = finding.with_cwe(value);
+                                }
+                                if let Some(value) = self.def.owasp.as_deref() {
+                                    finding = finding.with_owasp(value);
+                                }
+                                if let Some(value) = self.def.languages.first().copied() {
+                                    finding = finding.with_language(value);
+                                }
+                                finding
+                            }
                         })
                         .collect();
                 }
@@ -475,8 +500,19 @@ pub fn load_pack_dir(dir: &Path) -> Result<(PackMeta, Vec<Rule>), PackError> {
     };
 
     let mut rule_files = Vec::new();
-    collect_rule_files(&dir.join("rules"), &mut rule_files)?;
+    let rules_dir = dir.join("rules");
+    if !rules_dir.is_dir() {
+        return Err(PackError::Validate {
+            message: format!("pack directory '{}' has no rules directory", dir.display()),
+        });
+    }
+    collect_rule_files(&rules_dir, &mut rule_files)?;
     rule_files.sort();
+    if rule_files.is_empty() {
+        return Err(PackError::Validate {
+            message: format!("pack directory '{}' contains no .toml rules", dir.display()),
+        });
+    }
 
     let mut rules = Vec::new();
     for file in rule_files {
@@ -495,26 +531,27 @@ pub fn load_pack_dir(dir: &Path) -> Result<(PackMeta, Vec<Rule>), PackError> {
 }
 
 fn collect_rule_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), PackError> {
-    match std::fs::read_dir(dir) {
-        Ok(entries) => {
-            for entry in entries {
-                let entry = entry.map_err(|e| PackError::Validate {
-                    message: format!("unreadable rules entry: {e}"),
-                })?;
-                let path = entry.path();
-                if path.is_file()
-                    && path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(|e| e == "toml")
-                {
-                    out.push(path);
-                }
-            }
-            Ok(())
+    let entries = std::fs::read_dir(dir).map_err(|e| PackError::Read {
+        path: dir.to_path_buf(),
+        source: e.to_string(),
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| PackError::Validate {
+            message: format!("unreadable rules entry: {e}"),
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rule_files(&path, out)?;
+        } else if path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "toml")
+        {
+            out.push(path);
         }
-        Err(_) => Ok(()),
     }
+    Ok(())
 }
 
 fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
@@ -847,6 +884,9 @@ impl PackRegistry {
     /// Loads packs from directories, in order. Returns duplicates as an error.
     pub fn load_dirs(&mut self, dirs: &[PathBuf]) -> Result<(), PackError> {
         let mut seen = std::collections::HashMap::new();
+        for rule in self.iter() {
+            seen.insert(rule.def.id.clone(), rule.def.source.clone());
+        }
         for dir in dirs {
             let (meta, rules) = load_pack_dir(dir)?;
             let mut compiled = Vec::new();
@@ -885,6 +925,41 @@ impl PackRegistry {
 
     pub fn count(&self) -> usize {
         self.packs.iter().map(|(_, r)| r.len()).sum()
+    }
+
+    pub fn pack_names(&self) -> Vec<String> {
+        self.packs
+            .iter()
+            .map(|(meta, _)| meta.name.clone())
+            .collect()
+    }
+
+    pub fn cache_namespace(&self) -> String {
+        let mut material = String::new();
+        for (meta, rules) in &self.packs {
+            material.push_str(&meta.name);
+            material.push('\0');
+            material.push_str(&meta.version);
+            material.push('\0');
+            for rule in rules {
+                material.push_str(&rule.def.id);
+                material.push('\0');
+                material.push_str(&rule.def.description);
+                material.push('\0');
+                if let Some(pattern) = &rule.def.pattern {
+                    material.push_str(&pattern.regex);
+                    material.push('\0');
+                    if let Some(not_regex) = &pattern.not_regex {
+                        material.push_str(not_regex);
+                    }
+                }
+            }
+        }
+        format!(
+            "{}:{}",
+            CACHE_SCHEMA,
+            crate::cache::hash_bytes(material.as_bytes())
+        )
     }
 }
 

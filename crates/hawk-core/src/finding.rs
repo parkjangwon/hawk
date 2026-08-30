@@ -227,6 +227,10 @@ impl Findings {
     pub fn extend(&mut self, findings: Findings) {
         self.findings.extend(findings.findings);
     }
+
+    pub fn retain(&mut self, mut predicate: impl FnMut(&Finding) -> bool) {
+        self.findings.retain(|finding| predicate(finding));
+    }
 }
 
 #[cfg(test)]

@@ -74,7 +74,9 @@ where
     let mut format: Option<String> = config_format(&config);
     let mut output: Option<PathBuf> = config.report.output.clone();
     let mut fail_on_severity: Option<Severity> = config.policy.exit_on_severity;
+    let mut use_baseline = false;
     let mut packs: Vec<String> = config.packs.clone();
+    let mut cli_selected_packs = false;
     let mut pack_dirs: Vec<PathBuf> = config.pack_dirs.clone();
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut it = args.iter().peekable();
@@ -83,7 +85,12 @@ where
             "--changed" => git_mode = Some(GitScope::Changed),
             "--staged" => git_mode = Some(GitScope::Staged),
             "--no-cache" => use_cache = false,
+            "--baseline" => use_baseline = true,
             "--pack" => {
+                if !cli_selected_packs {
+                    packs.clear();
+                    cli_selected_packs = true;
+                }
                 packs.push(match it.next() {
                     Some(value) => value.clone(),
                     None => return fatal("--pack requires a pack name".to_string()),
@@ -188,6 +195,29 @@ where
         Err(error) => return fatal(error.to_string()),
     };
     let duration = started.elapsed().as_millis();
+    let mut result = result;
+    if use_baseline {
+        let baseline_path = hawk_core::baseline::baseline_path(&config.root_dir());
+        let baseline = match hawk_core::baseline::Baseline::load(&baseline_path) {
+            Ok(baseline) => baseline,
+            Err(error) => return fatal(format!("baseline error: {error}")),
+        };
+        let status = hawk_core::baseline::classify(
+            &baseline,
+            &result.findings.iter().cloned().collect::<Vec<_>>(),
+        );
+        eprintln!(
+            "baseline: {} existing, {} new, {} fixed",
+            status.existing.len(),
+            status.new.len(),
+            status.fixed.len()
+        );
+        let mut filtered = hawk_core::finding::Findings::new();
+        for finding in status.new {
+            filtered.push(finding);
+        }
+        result.findings = filtered;
+    }
 
     let rendered = match format.as_deref() {
         None | Some("terminal") | Some("text") => TerminalReporter.render(&result),
@@ -514,7 +544,7 @@ fn run_baseline_command(args: &[String]) -> RunOutcome {
     match sub.as_str() {
         "create" => run_baseline_create(&path, cwd.join(".hawk").join("cache")),
         "update" => run_baseline_create(&path, cwd.join(".hawk").join("cache")),
-        "status" => run_baseline_status(&path),
+        "status" => run_baseline_status(&path, cwd.join(".hawk").join("cache")),
         "help" | "--help" | "-h" => {
             println!("Usage: hawk baseline <create|update|status>");
             RunOutcome::Help
@@ -553,16 +583,34 @@ fn run_baseline_create(path: &std::path::Path, cache_dir: PathBuf) -> RunOutcome
 }
 
 /// Compares the current findings against an existing baseline.
-fn run_baseline_status(path: &std::path::Path) -> RunOutcome {
+fn run_baseline_status(path: &std::path::Path, cache_dir: PathBuf) -> RunOutcome {
     let baseline = match hawk_core::baseline::Baseline::load(path) {
         Ok(baseline) => baseline,
         Err(error) => return fatal(format!("baseline error: {error}")),
     };
-    println!(
-        "baseline has {} fingerprint(s)",
-        baseline.fingerprints.len()
+    let scanner = match Scanner::built_in() {
+        Ok(scanner) => scanner.with_cache(cache_dir),
+        Err(error) => return fatal(error.to_string()),
+    };
+    let result = match scanner.scan_paths(&[]) {
+        Ok(result) => result,
+        Err(error) => return fatal(error.to_string()),
+    };
+    let status = hawk_core::baseline::classify(
+        &baseline,
+        &result.findings.iter().cloned().collect::<Vec<_>>(),
     );
-    RunOutcome::Clean
+    println!(
+        "baseline: {} existing, {} new, {} fixed",
+        status.existing.len(),
+        status.new.len(),
+        status.fixed.len()
+    );
+    if status.new.is_empty() && status.fixed.is_empty() {
+        RunOutcome::Clean
+    } else {
+        RunOutcome::Findings
+    }
 }
 
 #[cfg(test)]
