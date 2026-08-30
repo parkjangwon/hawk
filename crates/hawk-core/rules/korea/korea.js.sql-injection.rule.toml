@@ -1,0 +1,13 @@
+id = "korea.js.sql-injection"
+name = "SQL injection via query concatenation"
+description = "입력데이터 검증 및 표현 - SQL 삽입(가-1): 외부 입력을 검증 없이 템플릿 리터럴로 쿼리에 연결하면 SQL 삽입 공격이 가능하다."
+recommendation = "파라미터 바인딩(placeholder) 쿼리 또는 ORM 파라미터화를 사용하고 외부 입력을 검증한다."
+category = "sql-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-89"
+owasp = "A03:2021"
+
+[pattern]
+regex = "\\.(query|execute|raw)\\s*\\([^)]*\\$\\{|(query|sql)\\s*=\\s*[^;]*\\$\\{"

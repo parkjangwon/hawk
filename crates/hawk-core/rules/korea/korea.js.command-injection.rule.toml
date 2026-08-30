@@ -1,0 +1,13 @@
+id = "korea.js.command-injection"
+name = "Command injection via child_process"
+description = "입력데이터 검증 및 표현 - 운영체제 명령어 삽입(가-5): child_process.exec에 외부 입력을 연결하면 OS 명령어 삽입이 가능하다."
+recommendation = "execFile/spawn에 인자 배열을 사용하고 셸 문자열 생성을 금지한다."
+category = "command-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-78"
+owasp = "A03:2021"
+
+[pattern]
+regex = "child_process\\.(exec|execSync)\\s*\\([^)]*(\\+|req\\.|\\$\\{)"

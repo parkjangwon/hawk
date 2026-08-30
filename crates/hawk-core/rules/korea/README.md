@@ -1,7 +1,8 @@
 # korea-secure-coding Rule Pack
 
 행정안전부·한국인터넷진흥원(KISA)이 배포하는 **소프트웨어 개발보안 가이드
-(2021.12.29)**의 구현단계 보안약점 제거 기준에 매핑된 Hawk 규칙 팩입니다.
+(2021.12.29)**와 **자바스크립트 시큐어코딩 가이드(2023년 개정본)**의
+구현단계 보안약점 제거 기준에 매핑된 Hawk 규칙 팩입니다.
 
 Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-1, 나-4 등)는 해당
 가이드의 보안약점 항목을 **참조 매핑**한 것입니다. 정부·산업 표준 매핑이 Hawk의
@@ -58,6 +59,46 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 
 > `(java pack)` 표시 항목은 동일 탐지 로직이 `java` 팩에 먼저 존재하는
 > 매핑 항목입니다(중복 탐지를 피하기 위해 korea 팩에 중복 정의하지 않음).
+
+
+## JavaScript Rules (Javascript 시큐어코딩 가이드, 2023년 개정본)
+
+동일 배포처의 **자바스크립트 시큐어코딩 가이드(2023년 개정본)** 구현단계 보안약점
+항목에 매핑된 규칙입니다. JS 데이터플로우(taint) 엔진은 아직 미지원이므로 패턴
+기반으로 구현했습니다.
+
+### 가. 입력데이터 검증 및 표현
+
+| Rule id | 항목 | Severity | CWE / OWASP |
+|---------|------|----------|-------------|
+| `korea.js.sql-injection` | 가-1 SQL 삽입 | critical | CWE-89 / A03 |
+| `korea.js.code-injection` (js pack: `javascript.security.eval`) | 가-2 코드 삽입 | critical | CWE-95 / A03 |
+| `korea.js.path-traversal` | 가-3 경로 조작 및 자원 삽입 | high | CWE-22 / A01 |
+| `korea.js.xss-react` | 가-4 크로스사이트 스크립트(React dangerouslySetInnerHTML) | high | CWE-79 / A03 |
+| `korea.js.command-injection` | 가-5 운영체제 명령어 삽입 | critical | CWE-78 / A03 |
+| `korea.js.open-redirect` (js pack: `javascript.security.open-redirect`) | 가-7 신뢰되지 않는 URL 자동접속 | medium | CWE-601 / A01 |
+| `korea.js.xxe` | 가-8 부적절한 XML 외부 개체 참조 | high | CWE-611 / A05 |
+| `korea.js.ldap-injection` | 가-10 LDAP 삽입 | high | CWE-90 / A03 |
+| `korea.js.ssrf` | 가-12 서버사이드 요청 위조 | high | CWE-918 / A10 |
+
+### 나. 보안기능 / 다. 시간 및 상태 / 라. 에러처리 / 바. 캡슐화
+
+| Rule id | 항목 | Severity | CWE / OWASP |
+|---------|------|----------|-------------|
+| `korea.js.weak-crypto` | 나-4 취약한 암호화 알고리즘 사용 | high | CWE-327 / A02 |
+| `korea.js.weak-random` | 나-8 적절하지 않은 난수 값 사용 | medium | CWE-330 / A02 |
+| `korea.js.infinite-loop` | 다-1 종료되지 않는 반복문·재귀 | medium | CWE-835 / A04 |
+| `korea.js.error-message-info` | 라-1 오류 메시지 정보노출 | medium | CWE-209 / A01 |
+| `korea.js.improper-exception` | 라-3 부적절한 예외 처리 | low | CWE-390 / A04 |
+| `korea.js.debug-code` | 바-2 제거되지 않고 남은 디버그 코드 | info | CWE-489 / A04 |
+
+> 가-2(eval), 가-7(open redirect), 가-4(innerHTML/document.write)는 `js` 팩의
+> 기존 규칙이 동일 탐지를 수행하므로 매핑만 표기하고 중복 정의하지 않았습니다.
+
+## Limitations
+
+- JS 데이터플로우(taint) 엔진 미지원으로 JS 규칙은 패턴 기반입니다.
+- 가-6 파일 업로드, 가-11 CSRF, 나-5 평문 저장 등은 정적 탐지가 어려워 미구현입니다.
 
 ## Limitations
 

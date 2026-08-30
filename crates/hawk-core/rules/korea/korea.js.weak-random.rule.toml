@@ -1,0 +1,13 @@
+id = "korea.js.weak-random"
+name = "Use of weak random generation"
+description = "보안기능 - 적절하지 않은 난수 값 사용(나-8): Math.random은 암호학적으로 안전하지 않아 토큰·비밀번호 등 보안 결정에 사용하면 예측 가능하다."
+recommendation = "crypto.randomBytes 등 암호학적으로 안전한 난수 생성기를 사용한다."
+category = "weak-crypto"
+severity = "medium"
+confidence = "high"
+languages = ["javascript", "typescript"]
+cwe = "CWE-330"
+owasp = "A02:2021"
+
+[pattern]
+regex = "Math\\.random\\s*\\("

@@ -1,0 +1,13 @@
+id = "korea.js.weak-crypto"
+name = "Use of weak cryptographic algorithm"
+description = "보안기능 - 취약한 암호화 알고리즘 사용(나-4): md5/sha1 해시나 des/rc4 암호화를 사용하면 데이터 보호가 무력화된다."
+recommendation = "SHA-256 이상, AES-256 등 안전한 알고리즘을 사용한다."
+category = "weak-crypto"
+severity = "high"
+confidence = "high"
+languages = ["javascript", "typescript"]
+cwe = "CWE-327"
+owasp = "A02:2021"
+
+[pattern]
+regex = "createHash\\s*\\(\\s*[\"'](md2|md4|md5|sha1)[\"']\\s*\\)|createCipher\\s*\\(\\s*[\"'](des|rc2|rc4|bf)[\"']|createCipheriv\\s*\\(\\s*[\"'][^\"']*(des|rc4|rc2)[\"']"

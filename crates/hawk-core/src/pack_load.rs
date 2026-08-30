@@ -488,6 +488,58 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                     "built-in:rules/korea/korea.java.raw-socket.rule.toml",
                     include_str!("../rules/korea/korea.java.raw-socket.rule.toml"),
                 ),
+                (
+                    "built-in:rules/korea/korea.js.sql-injection.rule.toml",
+                    include_str!("../rules/korea/korea.js.sql-injection.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.path-traversal.rule.toml",
+                    include_str!("../rules/korea/korea.js.path-traversal.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.xss-react.rule.toml",
+                    include_str!("../rules/korea/korea.js.xss-react.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.command-injection.rule.toml",
+                    include_str!("../rules/korea/korea.js.command-injection.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.xxe.rule.toml",
+                    include_str!("../rules/korea/korea.js.xxe.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.ldap-injection.rule.toml",
+                    include_str!("../rules/korea/korea.js.ldap-injection.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.ssrf.rule.toml",
+                    include_str!("../rules/korea/korea.js.ssrf.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.weak-crypto.rule.toml",
+                    include_str!("../rules/korea/korea.js.weak-crypto.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.weak-random.rule.toml",
+                    include_str!("../rules/korea/korea.js.weak-random.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.infinite-loop.rule.toml",
+                    include_str!("../rules/korea/korea.js.infinite-loop.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.error-message-info.rule.toml",
+                    include_str!("../rules/korea/korea.js.error-message-info.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.improper-exception.rule.toml",
+                    include_str!("../rules/korea/korea.js.improper-exception.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.js.debug-code.rule.toml",
+                    include_str!("../rules/korea/korea.js.debug-code.rule.toml"),
+                ),
             ],
         ),
     ];

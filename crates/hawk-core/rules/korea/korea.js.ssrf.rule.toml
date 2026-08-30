@@ -1,0 +1,13 @@
+id = "korea.js.ssrf"
+name = "Server-side request forgery"
+description = "입력데이터 검증 및 표현 - 서버사이드 요청 위조(가-12): 외부 입력으로 만든 URL을 axios/fetch/http로 요청하면 내부망·메타데이터 접근이 가능하다."
+recommendation = "요청 대상 호스트·스킴을 화이트리스트로 제한하고 내부 주소를 차단한다."
+category = "ssrf"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-918"
+owasp = "A10:2021"
+
+[pattern]
+regex = "(axios\\.(get|post|put|delete|request)|fetch|http\\.(get|request)|https\\.(get|request))\\s*\\([^)]*(req\\.|\\$\\{|\\+)"

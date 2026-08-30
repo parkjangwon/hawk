@@ -1,0 +1,14 @@
+id = "korea.js.xss-react"
+name = "XSS via dangerouslySetInnerHTML"
+description = "입력데이터 검증 및 표현 - 크로스사이트 스크립트(가-4): ReactJS의 dangerouslySetInnerHTML은 HTML을 그대로 렌더링하여 외부 입력이 XSS로 이어질 수 있다."
+recommendation = "dangerouslySetInnerHTML 사용을 금지하고, 외부 입력은 텍스트 노드로 렌더링한다."
+category = "xss"
+severity = "high"
+confidence = "high"
+languages = ["javascript", "typescript"]
+framework = "React"
+cwe = "CWE-79"
+owasp = "A03:2021"
+
+[pattern]
+regex = "dangerouslySetInnerHTML"

@@ -1,0 +1,13 @@
+id = "korea.js.error-message-info"
+name = "Sensitive error details exposed to client"
+description = "에러처리 - 오류 메시지 정보노출(라-1): err.stack·err.message를 응답에 포함하면 내부 구현 정보가 노출된다."
+recommendation = "서버 측에 로깅하고 클라이언트에는 일반화된 오류 메시지를 반환한다."
+category = "information-disclosure"
+severity = "medium"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-209"
+owasp = "A01:2021"
+
+[pattern]
+regex = "\\.(send|json)\\s*\\([^)]*\\.stack"
