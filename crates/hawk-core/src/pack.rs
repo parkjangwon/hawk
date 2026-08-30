@@ -1210,4 +1210,98 @@ mod tests {
             findings.len()
         );
     }
+
+    #[test]
+    fn every_built_in_rule_has_a_fixture_that_passes() {
+        let registry = PackRegistry::with_built_in().expect("built-ins should load");
+        let mut missing = Vec::new();
+        let mut failed = Vec::new();
+
+        for (meta, rules) in &registry.packs {
+            let pack_dir = match meta.name.as_str() {
+                "java" => "java",
+                "javascript" => "js",
+                "python" => "python",
+                "go" => "go",
+                "korea-secure-coding" => "korea",
+                other => other,
+            };
+            let fixtures_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("rules")
+                .join(pack_dir)
+                .join("fixtures");
+            for rule in rules {
+                let fixture = std::fs::read_dir(&fixtures_dir)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                            .find(|path| {
+                                path.file_name().and_then(|name| name.to_str()).is_some_and(
+                                    |name| name.starts_with(&format!("{}.", rule.id())),
+                                )
+                            })
+                    })
+                    .ok()
+                    .flatten();
+                let Some(fixture) = fixture else {
+                    missing.push(rule.id().to_string());
+                    continue;
+                };
+                let content = match std::fs::read_to_string(&fixture) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        failed.push(format!("{}: cannot read fixture: {error}", rule.id()));
+                        continue;
+                    }
+                };
+                let language = crate::language::Language::from_path(&fixture);
+                let findings = if language == crate::language::Language::Unknown {
+                    rule.check_source(&content, &fixture)
+                } else {
+                    let registry = crate::parser::ParserRegistry::default();
+                    match registry.parser_for(language) {
+                        Some(parser) => match parser.parse(&content) {
+                            Ok(tree) => rule.check_parsed(&tree, &content, &fixture),
+                            Err(error) => {
+                                failed.push(format!(
+                                    "{}: fixture does not parse: {error}",
+                                    rule.id()
+                                ));
+                                continue;
+                            }
+                        },
+                        None => rule.check_source(&content, &fixture),
+                    }
+                };
+                let annotations = crate::fixture::parse_annotations(&content);
+                if annotations.is_empty() {
+                    failed.push(format!(
+                        "{}: fixture has no ruleid/ok annotations",
+                        rule.id()
+                    ));
+                    continue;
+                }
+                let rule_id = rule.id().to_string();
+                let verdicts = crate::fixture::evaluate(&annotations, &findings, |annotated| {
+                    annotated == rule_id
+                });
+                if !verdicts.is_empty() {
+                    let detail: Vec<String> =
+                        verdicts.iter().map(crate::fixture::verdict_line).collect();
+                    failed.push(format!("{}: {}", rule.id(), detail.join("; ")));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "rules without fixtures: {}",
+            missing.join(", ")
+        );
+        assert!(
+            failed.is_empty(),
+            "fixture failures:\n{}",
+            failed.join("\n")
+        );
+    }
 }

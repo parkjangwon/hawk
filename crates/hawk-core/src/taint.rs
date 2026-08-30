@@ -116,7 +116,7 @@ impl<'a> State<'a> {
         match node.kind() {
             "local_variable_declaration" => self.handle_local_declaration(node),
             "assignment_expression" => self.handle_assignment(node),
-            "method_invocation" => self.handle_method_invocation(node),
+            "method_invocation" | "object_creation_expression" => self.handle_sink_expression(node),
             _ => {}
         }
         for child in node.children() {
@@ -307,7 +307,7 @@ impl<'a> State<'a> {
         }
     }
 
-    fn handle_method_invocation(&mut self, node: AstNode<'_>) {
+    fn handle_sink_expression(&mut self, node: AstNode<'_>) {
         let Some(text) = node.text(self.source).map(String::from) else {
             return;
         };
