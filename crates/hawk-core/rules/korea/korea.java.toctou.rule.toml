@@ -1,0 +1,13 @@
+id = "korea.java.toctou"
+name = "Time-of-check to time-of-use race condition"
+description = "시간 및 상태 - 경쟁조건(TOCTOU)(다-1): 파일 존재·권한을 검사한 뒤 사용하는 사이에 상태가 바뀌면 검증을 우회할 수 있다."
+recommendation = "검사 후 사용 시점 사이의 변경을 방지하고, 파일 열기 결과를 직접 검증한다."
+category = "race-condition"
+severity = "medium"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-367"
+owasp = "A04:2021"
+
+[pattern]
+regex = "\\.(exists|isFile|isDirectory|canRead|canWrite)\\s*\\(\\s*\\)"

@@ -1,0 +1,15 @@
+id = "korea.java.ldap-injection"
+name = "LDAP injection"
+description = "입력데이터 검증 및 표현 - LDAP 삽입(가-10): 외부 입력을 검증 없이 LDAP 검색 필터에 연결하면 필터를 우회하거나 주입할 수 있다."
+recommendation = "LDAP 필터는 파라미터화된 검색을 사용하고, 특수문자(\\, *, (, ), \\0)를 이스케이프한다."
+category = "ldap-injection"
+severity = "high"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-90"
+owasp = "A03:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["escapeLDAP", "sanitizeLdap"]
+sinks = [".search(", ".searchSync(", "DirContext"]

@@ -1,0 +1,13 @@
+id = "korea.java.insecure-certificate-validation"
+name = "Improper certificate validation"
+description = "보안기능 - 부적절한 인증서 유효성 검증(나-11): 신뢰 검증 없이 모든 인증서를 허용하거나 항상 true를 반환하면 중간자 공격(MITM)에 노출된다."
+recommendation = "시스템 신뢰 저장소를 사용하고, 검증 로직을 우회하는 TrustManager/HostnameVerifier 구현을 금지한다."
+category = "certificate-validation"
+severity = "critical"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-295"
+owasp = "A02:2021"
+
+[pattern]
+regex = "(?s)(checkServerTrusted|checkClientTrusted|verify)\\s*\\([^)]*\\)\\s*\\{[^}]*return\\s+true"

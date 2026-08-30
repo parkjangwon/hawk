@@ -1,0 +1,13 @@
+id = "korea.java.unsafe-deserialization"
+name = "Deserialization of untrusted data"
+description = "코드오류 - 신뢰할 수 없는 데이터의 역직렬화(마-5): ObjectInputStream/XMLDecoder로 역직렬화하면 조작된 스트림으로 임의 코드 실행이 가능하다."
+recommendation = "역직렬화 대상 클래스를 화이트리스트로 제한하거나, JSON 등 안전한 포맷을 사용한다."
+category = "insecure-deserialization"
+severity = "critical"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-502"
+owasp = "A08:2021"
+
+[pattern]
+regex = "ObjectInputStream|XMLDecoder|\\.readObject\\s*\\("

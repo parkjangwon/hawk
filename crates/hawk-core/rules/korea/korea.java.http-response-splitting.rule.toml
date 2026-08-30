@@ -1,0 +1,15 @@
+id = "korea.java.http-response-splitting"
+name = "HTTP response splitting"
+description = "입력데이터 검증 및 표현 - HTTP 응답분할(가-13): 외부 입력에 CR/LF가 포함된 채 응답 헤더에 사용되면 응답 분할 공격이 가능하다."
+recommendation = "헤더 값에서 CR(\\r)과 LF(\\n)를 제거하거나 화이트리스트로 검증한다."
+category = "response-splitting"
+severity = "high"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-113"
+owasp = "A03:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["sanitizeHeader", "filterCRLF"]
+sinks = [".setHeader(", ".addHeader("]

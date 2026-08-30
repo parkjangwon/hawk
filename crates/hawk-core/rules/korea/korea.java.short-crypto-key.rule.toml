@@ -1,0 +1,13 @@
+id = "korea.java.short-crypto-key"
+name = "Insufficient cryptographic key length"
+description = "보안기능 - 충분하지 않은 키 길이 사용(나-7): 56/64비트 등 짧은 키로 암호화 키를 생성하면 무차별 대입 공격에 취약하다."
+recommendation = "AES-128 이상, 이상적으로 AES-256 길이의 키를 사용한다."
+category = "weak-crypto"
+severity = "medium"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-326"
+owasp = "A02:2021"
+
+[pattern]
+regex = "KeyGenerator[^;]{0,160}?init\\s*\\(\\s*(56|64|80|96|112)\\s*\\)"

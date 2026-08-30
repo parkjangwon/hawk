@@ -1,0 +1,14 @@
+id = "korea.java.raw-socket"
+name = "Direct socket usage in web application"
+description = "API 오용 - 취약한 API 사용(사-2): 웹 애플리케이션에서 프레임워크 제공 기능 대신 소켓을 직접 사용하면 프레임워크 보안기능을 적용받지 못한다."
+recommendation = "프레임워크가 제공하는 통신 API를 사용하고, 소켓 사용 시 TLS 등 보안 채널을 보장한다."
+category = "unsafe-api"
+severity = "medium"
+confidence = "medium"
+languages = ["java"]
+framework = "Java EE"
+cwe = "CWE-676"
+owasp = "A04:2021"
+
+[pattern]
+regex = "new\\s+Socket\\s*\\([^)]*\\)"

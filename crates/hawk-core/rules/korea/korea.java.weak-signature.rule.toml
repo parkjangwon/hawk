@@ -1,0 +1,13 @@
+id = "korea.java.weak-signature"
+name = "Use of weak signature algorithm"
+description = "보안기능 - 부적절한 전자서명 확인(나-10): MD5/SHA-1 기반 서명 알고리즘은 충돌 공격에 취약하여 위·변조가 가능하다."
+recommendation = "SHA256withRSA, SHA256withECDSA 등 안전한 서명 알고리즘을 사용한다."
+category = "weak-crypto"
+severity = "high"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-347"
+owasp = "A02:2021"
+
+[pattern]
+regex = "Signature\\.getInstance\\s*\\([^)]*(MD5withRSA|SHA1withRSA|NONEwithRSA|MD5withDSA|SHA1withDSA|SHA1withECDSA)"

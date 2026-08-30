@@ -1,0 +1,13 @@
+id = "korea.java.unsigned-code-download"
+name = "Download of code without integrity check"
+description = "보안기능 - 무결성 검사 없는 코드 다운로드(나-15): URLClassLoader로 런타임에 코드를 내려받으면 위·변조된 코드가 실행될 수 있다."
+recommendation = "서명·해시 등 무결성 검증을 수행하거나, 런타임 코드 다운로드를 지양한다."
+category = "code-execution"
+severity = "high"
+confidence = "medium"
+languages = ["java"]
+cwe = "CWE-494"
+owasp = "A08:2021"
+
+[pattern]
+regex = "new\\s+URLClassLoader\\s*\\(|URLClassLoader\\s*\\("

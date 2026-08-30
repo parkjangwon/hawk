@@ -1,0 +1,14 @@
+id = "korea.java.xxe"
+name = "Improper XML external entity reference"
+description = "입력데이터 검증 및 표현 - 부적절한 XML 외부 개체 참조(가-8): XML 파서에서 외부 엔티티를 비활성화하지 않으면 XXE 공격으로 서버 파일 접근·정보 노출이 가능하다."
+recommendation = "파서 생성 직후 disallow-doctype-decl, external-general-entities, external-parameter-entities 기능을 false로 설정한다."
+category = "xxe"
+severity = "high"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-611"
+owasp = "A05:2021"
+
+[pattern]
+regex = "(DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|TransformerFactory|SchemaFactory)\\.newInstance|new\\s+SAXParser\\s*\\(|XMLReaderFactory\\.createXMLReader"
+not-regex = "disallow-doctype-decl|external-general-entities|external-parameter-entities|setFeature\\s*\\(\\s*\"http://xml\\.org/sax/features/external"

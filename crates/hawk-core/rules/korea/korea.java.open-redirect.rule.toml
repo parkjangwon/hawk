@@ -1,0 +1,15 @@
+id = "korea.java.open-redirect"
+name = "Unvalidated redirect"
+description = "입력데이터 검증 및 표현 - 신뢰되지 않는 URL 주소로 자동접속 연결(가-7): 외부 입력값을 검증 없이 sendRedirect 등에 사용하면 오픈 리다이렉트 공격에 악용될 수 있다."
+recommendation = "리다이렉트 대상 URL을 화이트리스트로 검증하거나 서버 내부 경로로 제한한다."
+category = "open-redirect"
+severity = "medium"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-601"
+owasp = "A01:2021"
+
+[taint]
+sources = ["getParameter", "getHeader"]
+sanitizers = ["isValidRedirect", "sanitizeUrl", "isSafeUrl"]
+sinks = [".sendRedirect(", ".forward("]

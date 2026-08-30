@@ -1,0 +1,13 @@
+id = "korea.java.comment-sensitive-info"
+name = "Sensitive information in source comments"
+description = "보안기능 - 주석문 안에 포함된 시스템 주요정보(나-13): 소스 주석에 비밀번호·키·토큰을 기록하면 저장소 접근자에게 노출된다."
+recommendation = "주석에 민감정보를 남기지 않고, 환경변수나 시크릿 관리자로 이동한다."
+category = "information-disclosure"
+severity = "medium"
+confidence = "high"
+languages = ["java", "javascript", "typescript", "python", "go"]
+cwe = "CWE-615"
+owasp = "A07:2021"
+
+[pattern]
+regex = "//[^\\n]*(password|passwd|pwd|secret|token|api[_-]?key)\\s*[:=]|/\\*[^\\*]*(password|passwd|pwd|secret|token|api[_-]?key)\\s*[:=]"

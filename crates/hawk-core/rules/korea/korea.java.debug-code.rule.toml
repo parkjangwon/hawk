@@ -1,0 +1,13 @@
+id = "korea.java.debug-code"
+name = "Debug code left in production"
+description = "캡슐화 - 제거되지 않고 남은 디버그 코드(바-2): 운영 코드에 남은 System.out/err 출력은 정보 노출과 성능 저하를 유발한다."
+recommendation = "로깅 프레임워크를 사용하고 디버그 출력을 제거한다."
+category = "information-disclosure"
+severity = "info"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-489"
+owasp = "A04:2021"
+
+[pattern]
+regex = "System\\.out\\.(print|println|printf)\\s*\\(|System\\.err\\.(print|println|printf)\\s*\\("

@@ -1,0 +1,13 @@
+id = "korea.java.unsafe-api"
+name = "Use of unsafe API"
+description = "API 오용 - 취약한 API 사용(사-2): System.gc, Thread.stop, Object.finalize 등 금지되거나 부주의하게 사용되는 API는 안정성·보안 문제를 유발한다."
+recommendation = "안전한 대체 API를 사용하고 금지 API 목록을 준수한다."
+category = "unsafe-api"
+severity = "medium"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-676"
+owasp = "A04:2021"
+
+[pattern]
+regex = "System\\.gc\\s*\\(|Thread\\.stop\\s*\\(|\\.finalize\\s*\\("

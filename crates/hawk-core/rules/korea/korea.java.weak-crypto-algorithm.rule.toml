@@ -1,0 +1,13 @@
+id = "korea.java.weak-crypto-algorithm"
+name = "Use of weak cryptographic algorithm"
+description = "보안기능 - 취약한 암호화 알고리즘 사용(나-4): DES, RC2, RC4, MD2, MD4, MD5, SHA-1 등 취약한 알고리즘을 사용하면 데이터 보호가 무력화된다."
+recommendation = "AES-256, SHA-256 이상의 안전한 알고리즘을 사용한다."
+category = "weak-crypto"
+severity = "high"
+confidence = "high"
+languages = ["java"]
+cwe = "CWE-327"
+owasp = "A02:2021"
+
+[pattern]
+regex = "(Cipher|MessageDigest|Mac|KeyGenerator)\\.getInstance\\s*\\([^)]*(DES|DESede|3DES|RC2|RC4|MD2|MD4|MD5|SHA-1|SHA-0)"
