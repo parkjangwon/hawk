@@ -261,29 +261,36 @@ impl CompiledRule {
                 .first()
                 .copied()
                 .unwrap_or(Language::Java);
-            return crate::taint::analyze_with_graph(tree, source, taint, language, graph)
-                .iter()
-                .map(|tf| {
-                    crate::taint::to_finding(
-                        tf,
-                        source,
-                        crate::taint::TaintMetadata {
-                            rule_id: &self.def.id,
-                            rule_name: &self.def.name,
-                            description: &self.def.description,
-                            recommendation: self.def.recommendation.as_deref(),
-                            category: self.def.category.as_deref(),
-                            framework: self.def.framework.as_deref(),
-                            cwe: self.def.cwe.as_deref(),
-                            owasp: self.def.owasp.as_deref(),
-                            language: self.def.languages.first().copied(),
-                            severity: self.def.severity,
-                            confidence: self.def.confidence,
-                        },
-                        path,
-                    )
-                })
-                .collect();
+            return crate::taint::analyze_with_graph(
+                tree,
+                source,
+                taint,
+                language,
+                graph,
+                Some(path),
+            )
+            .iter()
+            .map(|tf| {
+                crate::taint::to_finding(
+                    tf,
+                    source,
+                    crate::taint::TaintMetadata {
+                        rule_id: &self.def.id,
+                        rule_name: &self.def.name,
+                        description: &self.def.description,
+                        recommendation: self.def.recommendation.as_deref(),
+                        category: self.def.category.as_deref(),
+                        framework: self.def.framework.as_deref(),
+                        cwe: self.def.cwe.as_deref(),
+                        owasp: self.def.owasp.as_deref(),
+                        language: self.def.languages.first().copied(),
+                        severity: self.def.severity,
+                        confidence: self.def.confidence,
+                    },
+                    path,
+                )
+            })
+            .collect();
         }
         if let Some(query) = &self.def.query {
             match execute_query(

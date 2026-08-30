@@ -26,21 +26,24 @@ pub fn analyze(
     config: &TaintConfig,
     language: Language,
 ) -> Vec<TaintFinding> {
-    analyze_with_graph(tree, source, config, language, None)
+    analyze_with_graph(tree, source, config, language, None, None)
 }
 
 /// `analyze`, with cross-file callee resolution via the project's code graph.
+/// `path` is the analyzed file's path; it lets the engine reuse the graph's
+/// import/type/hierarchy-aware edge resolution for calls in this file.
 pub fn analyze_with_graph(
     tree: &SyntaxTree,
     source: &str,
     config: &TaintConfig,
     language: Language,
     graph: Option<&CodeGraph>,
+    path: Option<&std::path::Path>,
 ) -> Vec<TaintFinding> {
     if config.sources.is_empty() || config.sinks.is_empty() {
         return Vec::new();
     }
-    let mut state = State::new(source, config, language, graph);
+    let mut state = State::new(source, config, language, graph, path);
     state.collect_methods(tree.root());
     state.walk(tree.root());
     // Nested sink calls (e.g. an outer router.get(...) whose arrow-function
@@ -135,6 +138,8 @@ struct State<'a> {
     language: Language,
     /// The project-wide code graph for cross-file callee resolution.
     graph: Option<&'a CodeGraph>,
+    /// The analyzed file's path, for reusing graph edge resolution.
+    path: Option<&'a std::path::Path>,
     /// callee name → declaration lines per file, from the graph's symbols.
     name_locations: HashMap<String, Vec<(usize, usize)>>,
     /// (file index, line) → re-located callee node, memoized per analysis.
@@ -155,6 +160,7 @@ impl<'a> State<'a> {
         config: &'a TaintConfig,
         language: Language,
         graph: Option<&'a CodeGraph>,
+        path: Option<&'a std::path::Path>,
     ) -> Self {
         let mut name_locations: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         if let Some(graph) = graph {
@@ -170,6 +176,7 @@ impl<'a> State<'a> {
             config,
             language,
             graph,
+            path,
             name_locations,
             node_cache: HashMap::new(),
             tainted: HashSet::new(),
@@ -214,6 +221,27 @@ impl<'a> State<'a> {
             out.extend(same_file.iter().copied());
         }
         if let Some(graph) = self.graph {
+            // Reuse the graph's precise edge resolution (import/type/hierarchy
+            // aware) for calls in the analyzed file, when its path is known.
+            if let Some(path) = self.path {
+                for (file_index, line) in graph.resolved_callees_for_file(path, name) {
+                    let Some(file) = graph.files.get(file_index) else {
+                        continue;
+                    };
+                    let key = (file_index, line);
+                    let node = match self.node_cache.get(&key) {
+                        Some(cached) => *cached,
+                        None => {
+                            let found = file.method_node_at(line);
+                            self.node_cache.insert(key, found);
+                            found
+                        }
+                    };
+                    if let Some(node) = node {
+                        out.push((node, &file.source));
+                    }
+                }
+            }
             if let Some(locations) = self.name_locations.get(name).cloned() {
                 for (file_index, line) in locations {
                     let Some(file) = graph.files.get(file_index) else {

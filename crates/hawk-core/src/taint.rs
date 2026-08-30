@@ -647,6 +647,7 @@ class UserService {
             &sqli_config(),
             Language::Java,
             Some(&graph),
+            None,
         );
         assert_eq!(
             findings.len(),
@@ -691,6 +692,7 @@ class UserService {
             &sqli_config(),
             Language::Java,
             Some(&graph),
+            None,
         );
         assert_eq!(
             findings.len(),
@@ -730,6 +732,7 @@ class UserService {
             &sqli_config(),
             Language::Java,
             Some(&graph),
+            None,
         );
         assert!(findings.is_empty(), "literal arguments must stay clean");
     }
@@ -773,6 +776,7 @@ class UserRepository {
             &sqli_config(),
             Language::Java,
             Some(&graph),
+            None,
         );
         assert_eq!(
             findings.len(),
@@ -820,6 +824,7 @@ class UserService {
             &sqli_config(),
             Language::Java,
             Some(&graph),
+            None,
         );
         assert_eq!(
             findings.len(),

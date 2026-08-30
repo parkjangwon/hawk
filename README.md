@@ -75,8 +75,15 @@ hawk graph ./src --format mermaid       # flowchart source (mermaid renderer)
 
 The text listing ends with a summary (roots/leaves, most-called and
 most-calling symbols, longest resolved call chain) for quick architecture
-review, and receiver calls are resolved through declared types
-(`UserService service` → `service.deleteUser` = `UserService.deleteUser`).
+review. Callee resolution uses the strongest available signal, in order:
+
+1. import bindings (`import { deleteUser } from "./UserService"`,
+   aliases and `import * as ns` namespaces included; Python `from x import y`)
+2. declared receiver types with inheritance — `UserService service` resolves
+   `service.deleteUser` to `UserService.deleteUser`, falling back through the
+   `extends` chain, then `implements` interfaces, then concrete classes that
+   implement an interface-typed receiver (bodyless interface declarations are
+   skipped in favor of real implementations)
 
 The same index powers cross-file taint analysis during normal scans: a sink
 inside a service class reached from a controller is reported at the call site,
