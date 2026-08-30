@@ -50,6 +50,9 @@ where
     if args.first().map(String::as_str) == Some("rule") {
         return subcommands::run_rule_command(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("graph") {
+        return subcommands::run_graph_command(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("baseline") {
         return subcommands::run_baseline_command(&args[1..]);
     }
@@ -298,7 +301,7 @@ pub(crate) fn fatal(message: String) -> RunOutcome {
 }
 
 fn print_help() {
-    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache
+    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n  hawk graph [PATH ...] [--format text|json|mermaid]\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache
   --pack NAME    Only load the named rule pack (repeatable)
   --format F     Report format: terminal (default), json, sarif, html
   --fail-on-severity L  Only fail (exit 2) for findings at/above severity L
@@ -321,6 +324,20 @@ mod tests {
     fn unknown_options_are_rejected() {
         assert_eq!(run(["--unknown".to_owned()]).exit_code(), 1);
     }
+    #[test]
+    fn graph_command_indexes_architecture() {
+        let tmp = std::env::temp_dir().join(format!("hawk-graph-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("A.java"),
+            "class A { void run() { helper(); } void helper() {} }",
+        )
+        .unwrap();
+        let outcome = run(["graph".to_string(), tmp.to_string_lossy().to_string()]);
+        assert_eq!(outcome.exit_code(), 0, "graph command must succeed");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn exit_codes_follow_the_adr_contract() {
         assert_eq!(RunOutcome::Help.exit_code(), 0);

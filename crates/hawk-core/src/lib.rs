@@ -3,6 +3,7 @@
 pub mod ast;
 pub mod baseline;
 pub mod cache;
+pub mod code_graph;
 pub mod config;
 pub mod discovery;
 pub mod finding;

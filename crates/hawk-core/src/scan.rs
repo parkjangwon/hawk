@@ -53,15 +53,22 @@ impl Scanner {
     pub fn scan_targets(&self, targets: &[ScanTarget]) -> Result<ScanResult, ScanError> {
         let files =
             discover_with_excludes(targets, &self.excludes).map_err(ScanError::Discovery)?;
-        // Each file produces a per-file ScanResult; results are reassembled in
-        // the deterministic discovery order (rayon preserves the source order
-        // of the iterator via indexed output, and we sort by path anyway).
-        let per_file: Vec<ScanResult> = files
+        // Phase 1: read, cache-check, and parse every file in parallel. Trees
+        // are kept even for cache hits — the architecture index in phase 2
+        // needs every file's symbols for cross-file analysis.
+        let parsed: Vec<ParsedFile> = files
             .par_iter()
-            .map(|file| {
-                let path = file.path();
-                Scanner::scan_one(&self.packs, &self.parsers, &self.cache, path)
-            })
+            .map(|file| Scanner::parse_one(&self.parsers, &self.cache, file.path()))
+            .collect();
+        // Phase 2: project-wide architecture index (symbols + call edges).
+        let graph = crate::code_graph::CodeGraph::build(
+            parsed.iter().filter_map(ParsedFile::indexed).collect(),
+        );
+        // Phase 3: run rules per file with cross-file callee resolution
+        // (parallel; the graph is read-only and shared).
+        let per_file: Vec<ScanResult> = parsed
+            .par_iter()
+            .map(|file| Scanner::scan_parsed(&self.packs, &graph, &self.cache, file))
             .collect();
 
         let mut result = ScanResult::new(files.len());
@@ -92,30 +99,39 @@ impl Scanner {
         self.packs.count() > 0
     }
 
-    /// Analyzes one file, returning a standalone result (parallel-safe).
-    fn scan_one(
-        packs: &PackRegistry,
+    /// Phase 1: reads and parses one file, preserving the cache fast path and
+    /// the per-file issue/skip accounting. Parsing happens even on cache hits
+    /// so the architecture index covers the whole scan scope.
+    fn parse_one(
         parsers: &ParserRegistry,
         cache: &Option<cache::Cache>,
         path: &Path,
-    ) -> ScanResult {
-        let mut result = ScanResult::new(1);
+    ) -> ParsedFile {
+        let mut file = ParsedFile {
+            path: path.to_path_buf(),
+            language: Language::Unknown,
+            source: None,
+            tree: None,
+            cached_findings: Vec::new(),
+            cache_hit: false,
+            skipped: false,
+            issues: Vec::new(),
+        };
 
         // Resource guard: gigantic single files can exhaust memory during
         // regex/AST analysis. Skip them explicitly (observable, never silent).
         const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
         if let Ok(metadata) = fs::metadata(path) {
             if metadata.len() > MAX_SOURCE_BYTES {
-                result.push_issue(
+                file.issues.push((
                     FileIssueKind::Read,
-                    path.to_path_buf(),
                     format!(
                         "file exceeds {} byte(s) limit ({} bytes); skipped for safety",
                         MAX_SOURCE_BYTES,
                         metadata.len()
                     ),
-                );
-                return result;
+                ));
+                return file;
             }
         }
 
@@ -123,11 +139,8 @@ impl Scanner {
         if let Some(cache) = cache {
             if let Ok(hash) = cache::source_hash_of_file(path) {
                 if let Some(cached) = cache.get(path, &hash) {
-                    for finding in cached {
-                        result.findings.push(finding);
-                    }
-                    result.scanned_files = 1;
-                    return result;
+                    file.cached_findings = cached;
+                    file.cache_hit = true;
                 }
             }
         }
@@ -135,23 +148,55 @@ impl Scanner {
         let source = match fs::read_to_string(path) {
             Ok(source) => source,
             Err(source) => {
-                result.push_issue(FileIssueKind::Read, path.to_path_buf(), source.to_string());
-                return result;
+                file.issues.push((FileIssueKind::Read, source.to_string()));
+                return file;
             }
         };
-
         let language = Language::from_path(path);
         let Some(parser) = parsers.parser_for(language) else {
-            result.skipped_files += 1;
-            return result;
+            file.skipped = true;
+            return file;
         };
-
         let tree = match parser.parse(&source) {
             Ok(tree) => tree,
             Err(source) => {
-                result.push_issue(FileIssueKind::Parse, path.to_path_buf(), source.to_string());
-                return result;
+                file.issues.push((FileIssueKind::Parse, source.to_string()));
+                return file;
             }
+        };
+        file.language = language;
+        file.source = Some(source);
+        file.tree = Some(tree);
+        file
+    }
+
+    /// Phase 3: runs the loaded rules against one parsed file. Cached files
+    /// replay their stored findings; everything else is analyzed with the
+    /// project-wide code graph for cross-file taint resolution.
+    fn scan_parsed(
+        packs: &PackRegistry,
+        graph: &crate::code_graph::CodeGraph,
+        cache: &Option<cache::Cache>,
+        file: &ParsedFile,
+    ) -> ScanResult {
+        let mut result = ScanResult::new(1);
+
+        if file.cache_hit {
+            result.scanned_files = 1;
+            for finding in &file.cached_findings {
+                result.findings.push(finding.clone());
+            }
+            return result;
+        }
+        if file.skipped {
+            result.skipped_files += 1;
+            return result;
+        }
+        for (kind, message) in &file.issues {
+            result.push_issue(kind.clone(), file.path.clone(), message.clone());
+        }
+        let (Some(tree), Some(source)) = (&file.tree, &file.source) else {
+            return result;
         };
 
         result.scanned_files = 1;
@@ -160,7 +205,7 @@ impl Scanner {
             // but surface the issue so a degraded result can never look likea clean one.
             result.push_issue(
                 FileIssueKind::Parse,
-                path.to_path_buf(),
+                file.path.clone(),
                 "syntax tree contains errors; analysis is incomplete".to_string(),
             );
         }
@@ -168,8 +213,13 @@ impl Scanner {
         let scanned: Vec<_> = {
             let mut findings = Vec::new();
             for rule in packs.iter() {
-                if rule.languages().contains(&language) {
-                    findings.extend(rule.check_parsed(&tree, &source, path));
+                if rule.languages().contains(&file.language) {
+                    findings.extend(rule.check_parsed_with_graph(
+                        tree,
+                        source,
+                        &file.path,
+                        Some(graph),
+                    ));
                 }
             }
             findings
@@ -179,15 +229,40 @@ impl Scanner {
         }
 
         if let Some(cache) = cache {
-            if let Ok(hash) = cache::source_hash_of_file(path) {
+            if let Ok(hash) = cache::source_hash_of_file(&file.path) {
                 let mut findings = Findings::new();
                 for f in scanned {
                     findings.push(f);
                 }
-                let _ = cache.put(path, &hash, &findings);
+                let _ = cache.put(&file.path, &hash, &findings);
             }
         }
         result
+    }
+}
+
+/// A file carried between the parse phase and the rule-execution phase.
+struct ParsedFile {
+    path: PathBuf,
+    language: Language,
+    source: Option<String>,
+    tree: Option<crate::parser::SyntaxTree>,
+    cached_findings: Vec<crate::finding::Finding>,
+    cache_hit: bool,
+    skipped: bool,
+    issues: Vec<(FileIssueKind, String)>,
+}
+
+impl ParsedFile {
+    /// The parsed content as an indexable unit for the code graph, when the
+    /// file parsed successfully.
+    fn indexed(&self) -> Option<crate::code_graph::IndexedFile> {
+        Some(crate::code_graph::IndexedFile {
+            path: self.path.clone(),
+            language: self.language,
+            tree: self.tree.clone()?,
+            source: self.source.clone()?,
+        })
     }
 }
 

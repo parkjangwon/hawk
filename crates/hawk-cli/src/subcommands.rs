@@ -357,3 +357,101 @@ fn run_baseline_status(
         RunOutcome::Findings
     }
 }
+
+/// Dispatches the `hawk graph` subcommand: indexes the scanned code's
+/// architecture (symbols and call edges) and renders it.
+pub(crate) fn run_graph_command(args: &[String]) -> RunOutcome {
+    use hawk_core::{discovery::discover_with_excludes, scope::resolve};
+    use std::path::PathBuf;
+
+    let mut format = "text".to_string();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut it = args.iter().peekable();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--format" => {
+                format = match it.next() {
+                    Some(value) => value.clone(),
+                    None => return fatal("--format requires a value".to_string()),
+                };
+                if !matches!(format.as_str(), "text" | "json" | "mermaid") {
+                    return fatal(format!(
+                        "unknown graph format '{format}' (expected text, json, mermaid)"
+                    ));
+                }
+            }
+            "--help" | "-h" => {
+                println!("Usage: hawk graph [PATH ...] [--format text|json|mermaid]");
+                return RunOutcome::Help;
+            }
+            other if other.starts_with('-') => {
+                return fatal(format!("unknown graph option '{other}'"));
+            }
+            _ => paths.push(PathBuf::from(arg)),
+        }
+    }
+
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => return fatal(format!("config error: {error}")),
+    };
+    let configured: Vec<PathBuf> = if paths.is_empty() {
+        config
+            .include
+            .iter()
+            .map(|path| config.root_dir().join(path))
+            .collect()
+    } else {
+        paths.clone()
+    };
+    let refs: Vec<_> = configured.iter().map(PathBuf::as_path).collect();
+    let targets = match resolve(&refs) {
+        Ok(targets) => targets,
+        Err(error) => {
+            return fatal(match error {
+                hawk_core::scope::ScopeError::PathNotFound(path) => {
+                    format!("path not found: {}", path.display())
+                }
+                hawk_core::scope::ScopeError::MetadataUnavailable { path } => {
+                    format!("unable to determine path type: {}", path.display())
+                }
+            })
+        }
+    };
+    let files = match discover_with_excludes(&targets, &config.exclude) {
+        Ok(files) => files,
+        Err(error) => return fatal(format!("discovery error: {error}")),
+    };
+
+    let parsers = hawk_core::parser::ParserRegistry::default();
+    let mut indexed = Vec::new();
+    for file in &files {
+        let path = file.path();
+        let language = hawk_core::language::Language::from_path(path);
+        if language == hawk_core::language::Language::Unknown {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Some(parser) = parsers.parser_for(language) else {
+            continue;
+        };
+        let Ok(tree) = parser.parse(&source) else {
+            continue;
+        };
+        indexed.push(hawk_core::code_graph::IndexedFile {
+            path: path.to_path_buf(),
+            language,
+            tree,
+            source,
+        });
+    }
+    let graph = hawk_core::code_graph::CodeGraph::build(indexed);
+    match format.as_str() {
+        "json" => println!("{}", graph.to_json()),
+        "mermaid" => println!("{}", graph.to_mermaid()),
+        _ => print!("{}", graph.to_text()),
+    }
+    RunOutcome::Clean
+}

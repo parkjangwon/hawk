@@ -1,13 +1,18 @@
 //! Intraprocedural and intra-file interprocedural taint analysis for Java.
 //!
 //! The engine tracks tainted values from sources to sinks in source order,
-//! binds caller arguments to callee parameters, and follows same-file
-//! method return values. The public finding conversion lives in `taint.rs`.
+//! binds caller arguments to callee parameters, and follows same-file method
+//! return values. With a [`CodeGraph`], callee resolution extends across the
+//! whole scanned project: a call into another file is analyzed against that
+//! file's definition, and a tainted call whose callee body reaches a sink is
+//! reported at the call site (handler → service → repository scenarios).
+//! The public finding conversion lives in `taint.rs`.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast::AstNode,
+    code_graph::CodeGraph,
     language::Language,
     parser::SyntaxTree,
     taint::{TaintConfig, TaintFinding},
@@ -21,10 +26,21 @@ pub fn analyze(
     config: &TaintConfig,
     language: Language,
 ) -> Vec<TaintFinding> {
+    analyze_with_graph(tree, source, config, language, None)
+}
+
+/// `analyze`, with cross-file callee resolution via the project's code graph.
+pub fn analyze_with_graph(
+    tree: &SyntaxTree,
+    source: &str,
+    config: &TaintConfig,
+    language: Language,
+    graph: Option<&CodeGraph>,
+) -> Vec<TaintFinding> {
     if config.sources.is_empty() || config.sinks.is_empty() {
         return Vec::new();
     }
-    let mut state = State::new(source, config, language);
+    let mut state = State::new(source, config, language, graph);
     state.collect_methods(tree.root());
     state.walk(tree.root());
     // Nested sink calls (e.g. an outer router.get(...) whose arrow-function
@@ -46,7 +62,7 @@ pub fn analyze_java(tree: &SyntaxTree, source: &str, config: &TaintConfig) -> Ve
     analyze(tree, source, config, Language::Java)
 }
 
-fn method_like_kinds(language: Language) -> &'static [&'static str] {
+pub(crate) fn method_like_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Java => &["method_declaration", "constructor_declaration"],
         Language::JavaScript | Language::TypeScript => &[
@@ -99,7 +115,7 @@ fn loop_kinds(language: Language) -> &'static [&'static str] {
     }
 }
 
-fn call_kinds(language: Language) -> &'static [&'static str] {
+pub(crate) fn call_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Java => &["method_invocation", "object_creation_expression"],
         Language::JavaScript | Language::TypeScript => &["call_expression"],
@@ -109,10 +125,20 @@ fn call_kinds(language: Language) -> &'static [&'static str] {
     }
 }
 
+/// A callee definition available to the engine: its declaration node plus the
+/// source text of the file it lives in (needed for cross-file analysis).
+type Callee<'a> = (AstNode<'a>, &'a str);
+
 struct State<'a> {
     source: &'a str,
     config: &'a TaintConfig,
     language: Language,
+    /// The project-wide code graph for cross-file callee resolution.
+    graph: Option<&'a CodeGraph>,
+    /// callee name → declaration lines per file, from the graph's symbols.
+    name_locations: HashMap<String, Vec<(usize, usize)>>,
+    /// (file index, line) → re-located callee node, memoized per analysis.
+    node_cache: HashMap<(usize, usize), Option<AstNode<'a>>>,
     tainted: HashSet<String>,
     /// Variables assigned since the current branch/loop scope began. Used by
     /// the branch join to distinguish "reassigned clean" from "never touched".
@@ -120,15 +146,32 @@ struct State<'a> {
     findings: Vec<TaintFinding>,
     /// Functions declared in the analyzed file, keyed by name. Enables
     /// intra-file interprocedural taint propagation of return values.
-    methods: HashMap<String, Vec<AstNode<'a>>>,
+    methods: HashMap<String, Vec<Callee<'a>>>,
 }
 
 impl<'a> State<'a> {
-    fn new(source: &'a str, config: &'a TaintConfig, language: Language) -> Self {
+    fn new(
+        source: &'a str,
+        config: &'a TaintConfig,
+        language: Language,
+        graph: Option<&'a CodeGraph>,
+    ) -> Self {
+        let mut name_locations: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        if let Some(graph) = graph {
+            for symbol in &graph.symbols {
+                name_locations
+                    .entry(symbol.name.clone())
+                    .or_default()
+                    .push((symbol.file_index, symbol.line));
+            }
+        }
         Self {
             source,
             config,
             language,
+            graph,
+            name_locations,
+            node_cache: HashMap::new(),
             tainted: HashSet::new(),
             touched: HashSet::new(),
             findings: Vec::new(),
@@ -141,14 +184,17 @@ impl<'a> State<'a> {
             node: AstNode<'a>,
             source: &'a str,
             kinds: &'static [&'static str],
-            methods: &mut HashMap<String, Vec<AstNode<'a>>>,
+            methods: &mut HashMap<String, Vec<Callee<'a>>>,
         ) {
             if kinds.contains(&node.kind()) {
                 if let Some(name) = node
                     .child_by_field_name("name")
                     .and_then(|n| n.text(source))
                 {
-                    methods.entry(name.to_string()).or_default().push(node);
+                    methods
+                        .entry(name.to_string())
+                        .or_default()
+                        .push((node, source));
                 }
                 return;
             }
@@ -158,6 +204,40 @@ impl<'a> State<'a> {
         }
         let kinds = method_like_kinds(self.language);
         visit(root, self.source, kinds, &mut self.methods);
+    }
+
+    /// All definitions of `name`: same-file functions first, then cross-file
+    /// definitions from the code graph (re-located by symbol line).
+    fn resolve_callees(&mut self, name: &str) -> Vec<Callee<'a>> {
+        let mut out = Vec::new();
+        if let Some(same_file) = self.methods.get(name) {
+            out.extend(same_file.iter().copied());
+        }
+        if let Some(graph) = self.graph {
+            if let Some(locations) = self.name_locations.get(name).cloned() {
+                for (file_index, line) in locations {
+                    let Some(file) = graph.files.get(file_index) else {
+                        continue;
+                    };
+                    let key = (file_index, line);
+                    let node = match self.node_cache.get(&key) {
+                        Some(cached) => *cached,
+                        None => {
+                            let found = file.method_node_at(line);
+                            self.node_cache.insert(key, found);
+                            found
+                        }
+                    };
+                    if let Some(node) = node {
+                        out.push((node, &file.source));
+                    }
+                }
+            }
+        }
+        // The current file may also appear in the graph; drop duplicate nodes.
+        let mut seen = HashSet::new();
+        out.retain(|(node, _)| seen.insert((node.start_byte(), node.end_byte())));
+        out
     }
 
     fn walk(&mut self, node: AstNode<'_>) {
@@ -185,10 +265,14 @@ impl<'a> State<'a> {
         }
         match node.kind() {
             kind if declaration_kinds(self.language).contains(&kind) => {
-                self.handle_local_declaration(node)
+                self.handle_local_declaration(node, self.source)
             }
-            kind if assignment_kinds(self.language).contains(&kind) => self.handle_assignment(node),
-            kind if call_kinds(self.language).contains(&kind) => self.handle_sink_expression(node),
+            kind if assignment_kinds(self.language).contains(&kind) => {
+                self.handle_assignment(node, self.source)
+            }
+            kind if call_kinds(self.language).contains(&kind) => {
+                self.handle_sink_expression(node, self.source)
+            }
             _ => {}
         }
         for child in node.children() {
@@ -262,7 +346,7 @@ impl<'a> State<'a> {
         self.tainted.extend(body_state);
     }
 
-    fn handle_local_declaration(&mut self, node: AstNode<'_>) {
+    fn handle_local_declaration(&mut self, node: AstNode<'_>, source: &'a str) {
         // Java exposes the declarator as a field; JavaScript/Python grammars
         // place `variable_declarator` nodes as direct children.
         // Go `var x = ...` uses var_spec with direct name/value fields.
@@ -279,14 +363,14 @@ impl<'a> State<'a> {
         };
         let Some(name) = declarator
             .child_by_field_name("name")
-            .and_then(|n| n.text(self.source))
+            .and_then(|n| n.text(source))
             .map(String::from)
         else {
             return;
         };
         let value = declarator
             .child_by_field_name("value")
-            .and_then(|v| v.text(self.source))
+            .and_then(|v| v.text(source))
             .map(String::from);
         self.touched.insert(name.clone());
         match value {
@@ -297,17 +381,17 @@ impl<'a> State<'a> {
         }
     }
 
-    fn handle_assignment(&mut self, node: AstNode<'_>) {
+    fn handle_assignment(&mut self, node: AstNode<'_>, source: &'a str) {
         let Some(left) = node
             .child_by_field_name("left")
-            .and_then(|l| l.text(self.source))
+            .and_then(|l| l.text(source))
             .map(String::from)
         else {
             return;
         };
         let Some(right) = node
             .child_by_field_name("right")
-            .and_then(|r| r.text(self.source))
+            .and_then(|r| r.text(source))
             .map(String::from)
         else {
             return;
@@ -316,7 +400,7 @@ impl<'a> State<'a> {
 
         // Sink assignments (e.g. `el.innerHTML = userInput`, `document.body.innerHTML =
         // tainted`) are DOM XSS sinks even though they are not calls.
-        if let Some(text) = node.text(self.source).map(String::from) {
+        if let Some(text) = node.text(source).map(String::from) {
             if self.is_sink(&text) && self.expr_is_tainted(&right, &mut Vec::new()) {
                 self.emit_finding(node, text);
             }
@@ -371,8 +455,8 @@ impl<'a> State<'a> {
     }
 
     /// Whether an expression text carries taint: it references a tainted
-    /// variable, contains a source call, or is/contains a call to a same-file
-    /// method that returns tainted data (intra-file interprocedural taint).
+    /// variable, contains a source call, or is/contains a call to a method
+    /// that returns tainted data (same-file or, via the code graph, cross-file).
     fn expr_is_tainted(&mut self, text: &str, chain: &mut Vec<String>) -> bool {
         if self
             .config
@@ -397,30 +481,52 @@ impl<'a> State<'a> {
         if chain.contains(&name) {
             return false;
         }
-        let candidates: Vec<AstNode<'a>> = self.methods.get(&name).cloned().unwrap_or_default();
+        let candidates = self.resolve_callees(&name);
         if candidates.is_empty() {
             return false;
         }
         chain.push(name.clone());
         let tainted = candidates
             .iter()
-            .any(|method| self.callee_returns_tainted(*method, &args, chain));
+            .any(|(method, source)| self.callee_returns_tainted(*method, source, &args, chain));
         chain.pop();
         tainted
     }
 
-    /// Analyzes a same-file method body with the caller's argument taint bound
-    /// to its parameters, and reports whether any `return` expression is
-    /// tainted. Sink findings inside the callee are deliberately not emitted
-    /// here (the caller's sink site is the finding location).
+    /// Analyzes a method body with the caller's argument taint bound to its
+    /// parameters, and reports whether any `return` expression is tainted.
+    /// Sink findings inside the callee are deliberately not emitted here (the
+    /// caller's sink site is the finding location).
     fn callee_returns_tainted(
         &mut self,
         method: AstNode<'a>,
+        source: &'a str,
         args: &[String],
         chain: &mut Vec<String>,
     ) -> bool {
         let saved = std::mem::take(&mut self.tainted);
         let saved_touched = std::mem::take(&mut self.touched);
+        self.bind_params(method, source, args, chain);
+        let mut result = false;
+        for child in method.children() {
+            self.walk_for_returns(child, source, chain, &mut result);
+            if result {
+                break;
+            }
+        }
+        self.tainted = saved;
+        self.touched = saved_touched;
+        result
+    }
+
+    /// Binds tainted caller arguments to the callee's parameters.
+    fn bind_params(
+        &mut self,
+        method: AstNode<'a>,
+        source: &'a str,
+        args: &[String],
+        chain: &mut Vec<String>,
+    ) {
         let params: Vec<AstNode<'a>> = method
             .child_by_field_name("parameters")
             .map(|params| {
@@ -452,25 +558,21 @@ impl<'a> State<'a> {
             if self.expr_is_tainted(arg, chain) {
                 if let Some(name) = param
                     .child_by_field_name("name")
-                    .and_then(|n| n.text(self.source))
+                    .and_then(|n| n.text(source))
                 {
                     self.tainted.insert(name.to_string());
                 }
             }
         }
-        let mut result = false;
-        for child in method.children() {
-            self.walk_for_returns(child, chain, &mut result);
-            if result {
-                break;
-            }
-        }
-        self.tainted = saved;
-        self.touched = saved_touched;
-        result
     }
 
-    fn walk_for_returns(&mut self, node: AstNode<'_>, chain: &mut Vec<String>, result: &mut bool) {
+    fn walk_for_returns(
+        &mut self,
+        node: AstNode<'_>,
+        source: &'a str,
+        chain: &mut Vec<String>,
+        result: &mut bool,
+    ) {
         if method_like_kinds(self.language).contains(&node.kind()) {
             return;
         }
@@ -481,7 +583,7 @@ impl<'a> State<'a> {
                     let kind = child.kind();
                     kind != "return" && kind != ";"
                 })
-                .and_then(|child| child.text(self.source));
+                .and_then(|child| child.text(source));
             if let Some(value) = value {
                 if self.expr_is_tainted(value, chain) {
                     *result = true;
@@ -491,30 +593,128 @@ impl<'a> State<'a> {
         }
         match node.kind() {
             kind if declaration_kinds(self.language).contains(&kind) => {
-                self.handle_local_declaration(node)
+                self.handle_local_declaration(node, source)
             }
-            kind if assignment_kinds(self.language).contains(&kind) => self.handle_assignment(node),
+            kind if assignment_kinds(self.language).contains(&kind) => {
+                self.handle_assignment(node, source)
+            }
             _ => {}
         }
         if *result {
             return;
         }
         for child in node.children() {
-            self.walk_for_returns(child, chain, result);
+            self.walk_for_returns(child, source, chain, result);
             if *result {
                 break;
             }
         }
     }
 
-    fn handle_sink_expression(&mut self, node: AstNode<'_>) {
-        let Some(text) = node.text(self.source).map(String::from) else {
+    fn handle_sink_expression(&mut self, node: AstNode<'_>, source: &'a str) {
+        let Some(text) = node.text(source).map(String::from) else {
             return;
         };
 
-        if self.is_sink(&text) && self.expr_is_tainted(&text, &mut Vec::new()) {
-            self.emit_finding(node, text);
+        if self.is_sink(&text) {
+            if self.expr_is_tainted(&text, &mut Vec::new()) {
+                self.emit_finding(node, text);
+            }
+            return;
         }
+        // Cross-file scenario: a call with tainted arguments whose callee
+        // (defined elsewhere in the project) reaches a sink inside its body is
+        // reported at this call site — handler → service → repository chains.
+        if self.expr_is_tainted(&text, &mut Vec::new()) {
+            if let Some((name, args)) = parse_call(&text) {
+                if let Some(sink) = self.callee_reaches_sink(&name, &args, &mut Vec::new()) {
+                    self.emit_finding(node, format!("{name}(...) reaches sink {sink}"));
+                }
+            }
+        }
+    }
+
+    /// Whether any definition of `name` (same- or cross-file) reaches a sink
+    /// inside its body when the caller's tainted arguments are bound.
+    fn callee_reaches_sink(
+        &mut self,
+        name: &str,
+        args: &[String],
+        chain: &mut Vec<String>,
+    ) -> Option<String> {
+        if chain.contains(&name.to_string()) {
+            return None;
+        }
+        let candidates = self.resolve_callees(name);
+        if candidates.is_empty() {
+            return None;
+        }
+        chain.push(name.to_string());
+        let mut found = None;
+        for (method, source) in candidates {
+            if let Some(sink) = self.callee_has_sink(method, source, args, chain) {
+                found = Some(sink);
+                break;
+            }
+        }
+        chain.pop();
+        found
+    }
+
+    fn callee_has_sink(
+        &mut self,
+        method: AstNode<'a>,
+        source: &'a str,
+        args: &[String],
+        chain: &mut Vec<String>,
+    ) -> Option<String> {
+        let saved = std::mem::take(&mut self.tainted);
+        let saved_touched = std::mem::take(&mut self.touched);
+        self.bind_params(method, source, args, chain);
+        let mut sink = None;
+        for child in method.children() {
+            if let Some(found) = self.walk_for_sinks(child, source, chain) {
+                sink = Some(found);
+                break;
+            }
+        }
+        self.tainted = saved;
+        self.touched = saved_touched;
+        sink
+    }
+
+    /// Walks a callee body looking for a sink call whose arguments are tainted.
+    fn walk_for_sinks(
+        &mut self,
+        node: AstNode<'_>,
+        source: &'a str,
+        chain: &mut Vec<String>,
+    ) -> Option<String> {
+        if method_like_kinds(self.language).contains(&node.kind()) {
+            return None;
+        }
+        match node.kind() {
+            kind if declaration_kinds(self.language).contains(&kind) => {
+                self.handle_local_declaration(node, source)
+            }
+            kind if assignment_kinds(self.language).contains(&kind) => {
+                self.handle_assignment(node, source)
+            }
+            _ => {}
+        }
+        if call_kinds(self.language).contains(&node.kind()) {
+            if let Some(text) = node.text(source).map(String::from) {
+                if self.is_sink(&text) && self.expr_is_tainted(&text, chain) {
+                    return Some(text);
+                }
+            }
+        }
+        for child in node.children() {
+            if let Some(found) = self.walk_for_sinks(child, source, chain) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     fn is_sink(&self, text: &str) -> bool {
@@ -527,7 +727,7 @@ impl<'a> State<'a> {
 
 /// Parses `name(args...)` from an expression text: returns the final callee
 /// identifier (after any `receiver.` prefix) and the top-level argument texts.
-fn parse_call(text: &str) -> Option<(String, Vec<String>)> {
+pub(crate) fn parse_call(text: &str) -> Option<(String, Vec<String>)> {
     let open = text.find('(')?;
     let before = &text[..open];
     let name_start = before

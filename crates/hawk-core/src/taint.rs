@@ -8,7 +8,7 @@
 //! the algorithm while the rule file declares the semantics — exactly the
 //! model described in the README.
 
-pub use crate::taint_engine::{analyze, analyze_java};
+pub use crate::taint_engine::{analyze, analyze_java, analyze_with_graph};
 
 use crate::{
     finding::{Confidence, Finding, Severity, SourceLocation},
@@ -588,5 +588,149 @@ el.outerHTML = `<div>${q}</div>`;
 
         let findings = analyze(&tree, source, &config, Language::JavaScript);
         assert_eq!(findings.len(), 1, "template interpolation carries taint");
+    }
+
+    // ---------- cross-file (code graph) taint ----------
+
+    fn indexed_file(
+        path: &str,
+        language: Language,
+        source: &str,
+    ) -> crate::code_graph::IndexedFile {
+        let parser = TreeSitterParser { language };
+        let tree = parser.parse(source).expect("source should parse");
+        crate::code_graph::IndexedFile {
+            path: std::path::PathBuf::from(path),
+            language,
+            tree,
+            source: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn cross_file_sink_inside_callee_is_reported_at_call_site() {
+        // The sink lives in UserService (another file); the caller's call site
+        // carries the tainted argument. Without the code graph this is a FN.
+        let controller = r#"
+class Controller {
+    void handle(UserService service, java.sql.Statement st, javax.servlet.http.HttpServletRequest req) {
+        service.deleteUser(req.getParameter("id"), st);
+    }
+}
+"#;
+        let service = r#"
+class UserService {
+    void deleteUser(String userId, java.sql.Statement st) {
+        st.executeQuery("DELETE FROM users WHERE id='" + userId + "'");
+    }
+}
+"#;
+        let graph = crate::code_graph::CodeGraph::build(vec![
+            indexed_file("Controller.java", Language::Java, controller),
+            indexed_file("UserService.java", Language::Java, service),
+        ]);
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(controller).unwrap();
+
+        // Without the graph the cross-file sink is invisible.
+        let alone = analyze(&tree, controller, &sqli_config(), Language::Java);
+        assert!(
+            alone.is_empty(),
+            "sink in another file needs the code graph"
+        );
+
+        let findings = crate::taint::analyze_with_graph(
+            &tree,
+            controller,
+            &sqli_config(),
+            Language::Java,
+            Some(&graph),
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "cross-file sink must fire at the call site"
+        );
+        assert!(
+            findings[0].sink.contains("reaches sink"),
+            "finding should name the callee sink: {}",
+            findings[0].sink
+        );
+    }
+
+    #[test]
+    fn cross_file_return_value_taint_flows_to_caller_sink() {
+        let controller = r#"
+class Controller {
+    void handle(UserService service, java.sql.Statement st, javax.servlet.http.HttpServletRequest req) {
+        String sql = service.buildQuery(req.getParameter("id"));
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let service = r#"
+class UserService {
+    String buildQuery(String input) {
+        return "SELECT * FROM users WHERE id=" + input;
+    }
+}
+"#;
+        let graph = crate::code_graph::CodeGraph::build(vec![
+            indexed_file("Controller.java", Language::Java, controller),
+            indexed_file("UserService.java", Language::Java, service),
+        ]);
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(controller).unwrap();
+        let findings = crate::taint::analyze_with_graph(
+            &tree,
+            controller,
+            &sqli_config(),
+            Language::Java,
+            Some(&graph),
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "cross-file return taint must reach the caller's sink"
+        );
+        assert_eq!(findings[0].sink, "st.executeQuery(sql)");
+    }
+
+    #[test]
+    fn cross_file_clean_call_produces_no_finding() {
+        let controller = r#"
+class Controller {
+    void handle(UserService service, java.sql.Statement st) {
+        service.deleteUser("admin", st);
+    }
+}
+"#;
+        let service = r#"
+class UserService {
+    void deleteUser(String userId, java.sql.Statement st) {
+        st.executeQuery("DELETE FROM users WHERE id='" + userId + "'");
+    }
+}
+"#;
+        let graph = crate::code_graph::CodeGraph::build(vec![
+            indexed_file("Controller.java", Language::Java, controller),
+            indexed_file("UserService.java", Language::Java, service),
+        ]);
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(controller).unwrap();
+        let findings = crate::taint::analyze_with_graph(
+            &tree,
+            controller,
+            &sqli_config(),
+            Language::Java,
+            Some(&graph),
+        );
+        assert!(findings.is_empty(), "literal arguments must stay clean");
     }
 }

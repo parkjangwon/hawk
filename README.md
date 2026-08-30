@@ -63,6 +63,20 @@ hawk baseline create | status
 hawk config
 ```
 
+Architecture indexing — `hawk graph` builds a project-wide index of symbols
+and call edges from the scanned files, resolves calls to their definitions,
+and lists symbols with no callers (dead-code review):
+
+```bash
+hawk graph                              # text listing of symbols + call edges
+hawk graph ./src --format json          # machine-readable graph
+hawk graph ./src --format mermaid       # flowchart source (mermaid renderer)
+```
+
+The same index powers cross-file taint analysis during normal scans: a sink
+inside a service class reached from a controller is reported at the call site
+(handler → service → repository scenarios).
+
 These modes keep Hawk useful without sending the source to an external AI/SaaS
 service; analysis stays fully local.
 
@@ -126,6 +140,9 @@ Hawk should evolve through progressively deeper analysis capabilities:
 3. **Semantic analysis** — types, methods, annotations, framework-aware meaning.
 4. **Data-flow analysis** — track values from security-sensitive sources to sinks.
 5. **Interprocedural analysis** — follow flows across method/function boundaries.
+6. **Code-graph analysis** — index the project's architecture (symbols + call
+   edges) once per scan; resolve cross-file callees and report sinks reached
+   through real call chains.
 
 Not every rule needs the deepest analysis level. Rules should declare the analysis capability they require where appropriate.
 

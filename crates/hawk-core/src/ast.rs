@@ -38,6 +38,10 @@ impl<'tree> AstNode<'tree> {
         self.node.child_by_field_name(name).map(Self::new)
     }
 
+    pub fn parent(&self) -> Option<Self> {
+        self.node.parent().map(Self::new)
+    }
+
     pub fn children(&self) -> impl Iterator<Item = AstNode<'tree>> {
         let cursor = &mut self.node.walk();
         self.node

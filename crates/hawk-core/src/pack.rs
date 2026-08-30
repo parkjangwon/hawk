@@ -242,6 +242,18 @@ impl CompiledRule {
         source: &str,
         path: &std::path::Path,
     ) -> Vec<Finding> {
+        self.check_parsed_with_graph(tree, source, path, None)
+    }
+
+    /// `check_parsed` with the project code graph: taint rules resolve callees
+    /// across the whole scanned file set.
+    pub fn check_parsed_with_graph(
+        &self,
+        tree: &crate::parser::SyntaxTree,
+        source: &str,
+        path: &std::path::Path,
+        graph: Option<&crate::code_graph::CodeGraph>,
+    ) -> Vec<Finding> {
         if let Some(taint) = &self.def.taint {
             let language = self
                 .def
@@ -249,7 +261,7 @@ impl CompiledRule {
                 .first()
                 .copied()
                 .unwrap_or(Language::Java);
-            return crate::taint::analyze(tree, source, taint, language)
+            return crate::taint::analyze_with_graph(tree, source, taint, language, graph)
                 .iter()
                 .map(|tf| {
                     crate::taint::to_finding(
