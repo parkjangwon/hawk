@@ -75,6 +75,7 @@ name = "hawk"
 version = "0.1.0"
 dependencies = [
  "hawk-core",
+ "serde_json",
 ]
 
 [[package]]

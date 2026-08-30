@@ -10,3 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 hawk-core = { path = "../hawk-core" }
+
+[dev-dependencies]
+serde_json = "1.0"
