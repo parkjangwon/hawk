@@ -57,6 +57,13 @@ impl FileEntry {
 /// implementation, preventing accidental traversal outside the requested scope
 /// and symlink cycles.
 pub fn discover(targets: &[ScanTarget]) -> Result<Vec<FileEntry>, DiscoveryError> {
+    discover_with_excludes(targets, &[])
+}
+
+pub fn discover_with_excludes(
+    targets: &[ScanTarget],
+    excludes: &[String],
+) -> Result<Vec<FileEntry>, DiscoveryError> {
     let mut files = Vec::new();
 
     for target in targets {
@@ -66,14 +73,18 @@ pub fn discover(targets: &[ScanTarget]) -> Result<Vec<FileEntry>, DiscoveryError
                     files.push(FileEntry::new(path.clone()));
                 }
             }
-            ScanTarget::Directory(path) => collect_directory(path, &mut files)?,
+            ScanTarget::Directory(path) => collect_directory(path, &mut files, excludes)?,
         }
     }
 
     Ok(files)
 }
 
-fn collect_directory(path: &Path, files: &mut Vec<FileEntry>) -> Result<(), DiscoveryError> {
+fn collect_directory(
+    path: &Path,
+    files: &mut Vec<FileEntry>,
+    excludes: &[String],
+) -> Result<(), DiscoveryError> {
     let mut entries = fs::read_dir(path)
         .map_err(|error| directory_error(path, error))?
         .collect::<Result<Vec<_>, io::Error>>()
@@ -95,16 +106,23 @@ fn collect_directory(path: &Path, files: &mut Vec<FileEntry>) -> Result<(), Disc
         }
 
         if file_type.is_dir() {
-            if is_ignored_directory(&entry_path) {
+            if is_ignored_directory(&entry_path) || is_excluded(&entry_path, excludes) {
                 continue;
             }
-            collect_directory(&entry_path, files)?;
-        } else if file_type.is_file() {
+            collect_directory(&entry_path, files, excludes)?;
+        } else if file_type.is_file() && !is_excluded(&entry_path, excludes) {
             files.push(FileEntry::new(entry_path));
         }
     }
 
     Ok(())
+}
+
+fn is_excluded(path: &Path, excludes: &[String]) -> bool {
+    excludes.iter().any(|pattern| {
+        let normalized = path.to_string_lossy();
+        normalized == pattern.as_str() || normalized.contains(pattern)
+    })
 }
 
 fn is_regular_file(path: &Path) -> Result<bool, DiscoveryError> {

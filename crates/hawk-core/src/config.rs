@@ -194,7 +194,16 @@ impl Config {
             config.packs = packs;
         }
         if let Some(pack_dirs) = raw.pack_dirs {
-            config.pack_dirs = pack_dirs;
+            config.pack_dirs = pack_dirs
+                .into_iter()
+                .map(|dir| {
+                    if dir.is_absolute() {
+                        dir
+                    } else {
+                        path.parent().unwrap_or_else(|| Path::new(".")).join(dir)
+                    }
+                })
+                .collect();
         }
         if let Some(report) = raw.report {
             if let Some(format) = report.format {
@@ -214,7 +223,11 @@ impl Config {
                 };
             }
             if let Some(output) = report.output {
-                config.report.output = Some(output);
+                config.report.output = Some(if output.is_absolute() {
+                    output
+                } else {
+                    path.parent().unwrap_or_else(|| Path::new(".")).join(output)
+                });
             }
         }
         if let Some(policy) = raw.policy {
@@ -280,7 +293,7 @@ exit-on-severity = "high"
         assert_eq!(config.report.format, ReportFormat::Json);
         assert_eq!(
             config.report.output.as_deref(),
-            Some(Path::new("report.json"))
+            Some(Path::new("x/report.json"))
         );
         assert_eq!(
             config.policy.exit_on_severity,

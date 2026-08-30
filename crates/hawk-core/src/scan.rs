@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     cache::{self, Cache},
-    discovery::{discover, DiscoveryError},
+    discovery::{discover_with_excludes, DiscoveryError},
     finding::Findings,
     language::Language,
     pack::{PackError, PackRegistry},
@@ -17,6 +17,7 @@ pub struct Scanner {
     parsers: ParserRegistry,
     packs: PackRegistry,
     cache: Option<Cache>,
+    excludes: Vec<String>,
 }
 
 impl Scanner {
@@ -26,6 +27,7 @@ impl Scanner {
             parsers: ParserRegistry::default(),
             packs,
             cache: None,
+            excludes: Vec::new(),
         })
     }
 
@@ -37,13 +39,19 @@ impl Scanner {
         self
     }
 
+    pub fn with_excludes(mut self, excludes: Vec<String>) -> Self {
+        self.excludes = excludes;
+        self
+    }
+
     pub fn scan_paths(&self, paths: &[&Path]) -> Result<ScanResult, ScanError> {
         let targets = resolve(paths).map_err(ScanError::Scope)?;
         self.scan_targets(&targets)
     }
 
     pub fn scan_targets(&self, targets: &[ScanTarget]) -> Result<ScanResult, ScanError> {
-        let files = discover(targets).map_err(ScanError::Discovery)?;
+        let files =
+            discover_with_excludes(targets, &self.excludes).map_err(ScanError::Discovery)?;
         // Each file produces a per-file ScanResult; results are reassembled in
         // the deterministic discovery order (rayon preserves the source order
         // of the iterator via indexed output, and we sort by path anyway).
@@ -71,6 +79,10 @@ impl Scanner {
         self.packs.select_packs(wanted);
     }
 
+    pub fn load_pack_dirs(&mut self, dirs: &[PathBuf]) -> Result<(), ScanError> {
+        self.packs.load_dirs(dirs).map_err(ScanError::Pack)
+    }
+
     /// Whether the scanner carries any loaded rules at all.
     pub fn has_rules(&self) -> bool {
         self.packs.count() > 0
@@ -87,7 +99,7 @@ impl Scanner {
         // Cache fast path: unchanged files reuse previous findings.
         if let Some(cache) = cache {
             if let Ok(hash) = cache::source_hash_of_file(path) {
-                if let Some(cached) = cache.get(&hash) {
+                if let Some(cached) = cache.get(path, &hash) {
                     for finding in cached {
                         result.findings.push(finding);
                     }
@@ -147,7 +159,7 @@ impl Scanner {
                 for f in scanned {
                     findings.push(f);
                 }
-                let _ = cache.put(&hash, &findings);
+                let _ = cache.put(path, &hash, &findings);
             }
         }
         result

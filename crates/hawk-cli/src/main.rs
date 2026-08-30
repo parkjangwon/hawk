@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use hawk_core::{
+    config::{Config, ReportFormat},
     finding::Severity,
     git::GitScope,
     reporter::TerminalReporter,
@@ -62,13 +63,19 @@ where
         return RunOutcome::Version;
     }
 
-    // Parse options and positional paths.
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => return fatal(format!("config error: {error}")),
+    };
+
+    // Parse options. CLI values override project configuration.
     let mut git_mode: Option<GitScope> = None;
     let mut use_cache = true;
-    let mut format: Option<String> = None;
-    let mut output: Option<PathBuf> = None;
-    let mut fail_on_severity: Option<Severity> = None;
-    let mut packs: Vec<String> = Vec::new();
+    let mut format: Option<String> = config_format(&config);
+    let mut output: Option<PathBuf> = config.report.output.clone();
+    let mut fail_on_severity: Option<Severity> = config.policy.exit_on_severity;
+    let mut packs: Vec<String> = config.packs.clone();
+    let mut pack_dirs: Vec<PathBuf> = config.pack_dirs.clone();
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
@@ -80,6 +87,12 @@ where
                 packs.push(match it.next() {
                     Some(value) => value.clone(),
                     None => return fatal("--pack requires a pack name".to_string()),
+                });
+            }
+            "--pack-dir" => {
+                pack_dirs.push(match it.next() {
+                    Some(value) => PathBuf::from(value),
+                    None => return fatal("--pack-dir requires a directory".to_string()),
                 });
             }
             "--fail-on-severity" => {
@@ -120,9 +133,12 @@ where
     }
 
     let mut scanner = match Scanner::built_in() {
-        Ok(scanner) => scanner,
+        Ok(scanner) => scanner.with_excludes(config.exclude.clone()),
         Err(error) => return fatal(error.to_string()),
     };
+    if let Err(error) = scanner.load_pack_dirs(&pack_dirs) {
+        return fatal(error.to_string());
+    }
     if !packs.is_empty() {
         scanner.select_packs(&packs);
     }
@@ -135,7 +151,16 @@ where
             Err(error) => return fatal(error.to_string()),
         }
     } else {
-        let refs: Vec<_> = paths.iter().map(PathBuf::as_path).collect();
+        let configured_paths = if paths.is_empty() {
+            config
+                .include
+                .iter()
+                .map(|path| config.root_dir().join(path))
+                .collect::<Vec<_>>()
+        } else {
+            paths.clone()
+        };
+        let refs: Vec<_> = configured_paths.iter().map(PathBuf::as_path).collect();
         match resolve(&refs) {
             Ok(targets) => targets,
             Err(error) => {
@@ -152,9 +177,9 @@ where
     };
 
     if use_cache {
-        // Cache lives in .hawk/cache under the project root (ADR-0003). Best-effort.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        scanner = scanner.with_cache(cwd.join(".hawk").join("cache"));
+        // Cache lives in .hawk/cache under the project root. Best-effort writes
+        // never turn a correct scan into an operational failure.
+        scanner = scanner.with_cache(config.data_dir().join("cache"));
     }
 
     let started = std::time::Instant::now();
@@ -197,6 +222,16 @@ where
         RunOutcome::Findings
     } else {
         RunOutcome::Clean
+    }
+}
+
+fn config_format(config: &Config) -> Option<String> {
+    match config.report.format {
+        ReportFormat::Auto => None,
+        ReportFormat::Terminal => Some("terminal".to_string()),
+        ReportFormat::Json => Some("json".to_string()),
+        ReportFormat::Sarif => Some("sarif".to_string()),
+        ReportFormat::Html => Some("html".to_string()),
     }
 }
 

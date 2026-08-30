@@ -47,6 +47,7 @@ pub fn hash_bytes(data: &[u8]) -> String {
 pub struct CacheEntry {
     pub schema: String,
     pub source_hash: String,
+    pub source_path: String,
     pub findings: Vec<Finding>,
 }
 
@@ -62,30 +63,41 @@ impl Cache {
         Self { root }
     }
 
-    fn path_for(&self, source_hash: &str) -> PathBuf {
+    fn path_for(&self, cache_key: &str) -> PathBuf {
         // Two-segment shard keeps the directory flat and fast.
         self.root
-            .join(&source_hash[..2])
-            .join(format!("{}.cache.json", source_hash))
+            .join(&cache_key[..2])
+            .join(format!("{}.cache.json", cache_key))
     }
 
-    pub fn get(&self, source_hash: &str) -> Option<Vec<Finding>> {
-        let path = self.path_for(source_hash);
+    pub fn get(&self, source_path: &Path, source_hash: &str) -> Option<Vec<Finding>> {
+        let cache_key = cache_key(source_path, source_hash);
+        let path = self.path_for(&cache_key);
         let content = std::fs::read_to_string(&path).ok()?;
         let entry: CacheEntry = serde_json::from_str(&content).ok()?;
-        if entry.schema != CACHE_SCHEMA || entry.source_hash != source_hash {
+        if entry.schema != CACHE_SCHEMA
+            || entry.source_hash != source_hash
+            || entry.source_path != source_path.to_string_lossy()
+        {
             return None;
         }
         Some(entry.findings)
     }
 
-    pub fn put(&self, source_hash: &str, findings: &Findings) -> Result<(), CacheError> {
+    pub fn put(
+        &self,
+        source_path: &Path,
+        source_hash: &str,
+        findings: &Findings,
+    ) -> Result<(), CacheError> {
         let entry = CacheEntry {
             schema: CACHE_SCHEMA.to_string(),
             source_hash: source_hash.to_string(),
+            source_path: source_path.to_string_lossy().into_owned(),
             findings: findings.iter().cloned().collect(),
         };
-        let path = self.path_for(source_hash);
+        let cache_key = cache_key(source_path, source_hash);
+        let path = self.path_for(&cache_key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CacheError {
                 message: format!("unable to create cache dir: {e}"),
@@ -98,6 +110,18 @@ impl Cache {
             message: format!("unable to write cache: {e}"),
         })
     }
+}
+
+fn cache_key(path: &Path, source_hash: &str) -> String {
+    hash_bytes(
+        format!(
+            "{}\\0{}\\0{}",
+            CACHE_SCHEMA,
+            path.to_string_lossy(),
+            source_hash
+        )
+        .as_bytes(),
+    )
 }
 
 pub fn source_hash_of_file(path: &Path) -> Result<String, CacheError> {
@@ -151,12 +175,30 @@ mod tests {
         findings.push(sample_finding());
         let h = hash_bytes(b"class A {}");
 
-        cache.put(&h, &findings).expect("put should succeed");
-        let got = cache.get(&h).expect("same hash should hit cache");
+        let path = Path::new("A.java");
+        cache.put(path, &h, &findings).expect("put should succeed");
+        let got = cache.get(path, &h).expect("same hash should hit cache");
 
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].rule_id, "rule.a");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identical_content_at_different_paths_has_separate_entries() {
+        let root = temp_root();
+        let cache = Cache::new(root.clone());
+        let mut findings = Findings::new();
+        findings.push(sample_finding());
+        let hash = hash_bytes(b"same source");
+
+        cache
+            .put(Path::new("A.java"), &hash, &findings)
+            .expect("first put should succeed");
+        assert!(cache.get(Path::new("A.java"), &hash).is_some());
+        assert!(cache.get(Path::new("B.java"), &hash).is_none());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -165,11 +207,12 @@ mod tests {
         let cache = Cache::new(root.clone());
         let mut findings = Findings::new();
         findings.push(sample_finding());
+        let path = Path::new("A.java");
         cache
-            .put(&hash_bytes(b"old"), &findings)
+            .put(path, &hash_bytes(b"old"), &findings)
             .expect("put should succeed");
 
-        assert!(cache.get(&hash_bytes(b"new")).is_none());
+        assert!(cache.get(path, &hash_bytes(b"new")).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
