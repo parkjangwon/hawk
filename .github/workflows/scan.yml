@@ -1,4 +1,8 @@
-name: Hawk scan
+# Hawk self-scan (dogfooding): Hawk analyzes its own repository.
+# Findings at/above the configured severity fail the pipeline; the SARIF report
+# is still uploaded so every run leaves auditable evidence.
+
+name: Hawk self-scan
 
 on:
   push:
@@ -14,12 +18,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build Hawk
-        run: cargo build --release -p hawk
+        run: cargo build --locked --release -p hawk
 
       - name: Scan the repository
+        id: scan
         run: |
-          ./target/release/hawk --format sarif -o report.sarif --fail-on-severity medium .
-        continue-on-error: true
+          ./target/release/hawk --format sarif -o report.sarif .
+          status=$?
+          # --fail-on-severity comes from hawk.toml policy; findings fail the
+          # job (exit 2) while the SARIF artifact is preserved for inspection.
+          exit $status
 
       - name: Upload SARIF report
         if: always()

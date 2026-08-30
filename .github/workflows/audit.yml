@@ -1,0 +1,22 @@
+# Dependency security audit (cargo-audit against the RustSec advisory DB).
+# A security analyzer must keep its own supply chain clean.
+
+name: Dependency audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 0 * * 1'  # weekly on Monday
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cargo audit
+        uses: actions-rust-lang/audit@v1
+        with:
+          args: --deny warnings

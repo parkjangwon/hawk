@@ -1,5 +1,8 @@
 # Hawk 🦅
 
+[![CI](https://github.com/parkjangwon/hawk/actions/workflows/ci.yml/badge.svg)](https://github.com/parkjangwon/hawk/actions/workflows/ci.yml)
+[![Dependency audit](https://github.com/parkjangwon/hawk/actions/workflows/audit.yml/badge.svg)](https://github.com/parkjangwon/hawk/actions/workflows/audit.yml)
+
 **Local-first static security analysis for developers.**
 
 Hawk is an open-source, developer-first static application security testing (SAST) tool designed to run locally on a developer's machine. It analyzes source code without requiring a cloud service, database, AI API, or external middleware.

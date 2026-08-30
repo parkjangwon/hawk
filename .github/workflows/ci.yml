@@ -1,3 +1,6 @@
+# Hawk quality gates: format, lint, tests, and diff hygiene on every push/PR.
+# Mirrors the local gates documented in README (Development Philosophy).
+
 name: CI
 
 on:
@@ -10,7 +13,12 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +27,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -27,15 +35,30 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
       - name: Diff hygiene
-        run: git diff --check || true
+        if: runner.os == 'Linux'
+        run: git diff --check
+
+  fixtures:
+    name: rule fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify every built-in rule has a passing fixture
+        run: cargo test --locked -p hawk-core --lib every_built_in_rule_has_a_fixture_that_passes

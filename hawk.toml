@@ -1,0 +1,11 @@
+# Hawk project configuration for self-scan (dogfooding).
+#
+# `hawk .` from the repository root uses this file. The fixture directories
+# intentionally contain vulnerable snippets annotated with `ruleid:`/`ok:`;
+# they are regression fixtures, not production code, so they are excluded from
+# the self-scan. `--format sarif` output feeds .github/workflows/scan.yml.
+
+exclude = ["/fixtures/"]
+
+[policy]
+exit-on-severity = "medium"
