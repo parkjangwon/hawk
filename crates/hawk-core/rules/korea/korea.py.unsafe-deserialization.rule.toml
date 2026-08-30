@@ -1,0 +1,13 @@
+id = "korea.py.unsafe-deserialization"
+name = "Deserialization of untrusted data"
+description = "코드오류 - 신뢰할 수 없는 데이터의 역직렬화(마-3): yaml.load·marshal로 역직렬화하면 조작된 입력으로 임의 코드 실행이 가능하다."
+recommendation = "yaml.safe_load를 사용하고 역직렬화 대상 클래스를 제한한다."
+category = "insecure-deserialization"
+severity = "critical"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-502"
+owasp = "A08:2021"
+
+[pattern]
+regex = "yaml\\.load\\s*\\(|marshal\\.(loads|load)\\s*\\("

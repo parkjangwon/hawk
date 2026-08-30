@@ -1,0 +1,13 @@
+id = "korea.py.weak-random"
+name = "Use of weak random generation"
+description = "보안기능 - 적절하지 않은 난수 값 사용(나-8): random 모듈은 암호학적으로 안전하지 않아 보안 결정에 사용하면 예측 가능하다."
+recommendation = "secrets 모듈 또는 os.urandom을 사용한다."
+category = "weak-crypto"
+severity = "medium"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-330"
+owasp = "A02:2021"
+
+[pattern]
+regex = "random\\.(random|randrange|randint|choice|uniform|shuffle)\\s*\\("

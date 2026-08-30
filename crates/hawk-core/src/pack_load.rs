@@ -540,6 +540,50 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                     "built-in:rules/korea/korea.js.debug-code.rule.toml",
                     include_str!("../rules/korea/korea.js.debug-code.rule.toml"),
                 ),
+                (
+                    "built-in:rules/korea/korea.py.sql-injection.rule.toml",
+                    include_str!("../rules/korea/korea.py.sql-injection.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.path-traversal.rule.toml",
+                    include_str!("../rules/korea/korea.py.path-traversal.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.xxe.rule.toml",
+                    include_str!("../rules/korea/korea.py.xxe.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.weak-crypto.rule.toml",
+                    include_str!("../rules/korea/korea.py.weak-crypto.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.weak-random.rule.toml",
+                    include_str!("../rules/korea/korea.py.weak-random.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.toctou.rule.toml",
+                    include_str!("../rules/korea/korea.py.toctou.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.infinite-loop.rule.toml",
+                    include_str!("../rules/korea/korea.py.infinite-loop.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.error-message-info.rule.toml",
+                    include_str!("../rules/korea/korea.py.error-message-info.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.improper-exception.rule.toml",
+                    include_str!("../rules/korea/korea.py.improper-exception.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.unsafe-deserialization.rule.toml",
+                    include_str!("../rules/korea/korea.py.unsafe-deserialization.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.debug-code.rule.toml",
+                    include_str!("../rules/korea/korea.py.debug-code.rule.toml"),
+                ),
             ],
         ),
     ];

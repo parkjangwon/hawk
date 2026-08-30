@@ -1,0 +1,13 @@
+id = "korea.py.infinite-loop"
+name = "Unterminated loop or recursion"
+description = "시간 및 상태 - 종료되지 않는 반복문 또는 재귀 함수(다-2): while True 루프는 서비스 거부(DoS)를 유발할 수 있다."
+recommendation = "반복에 명시적 종료 조건과 최대 횟수 제한을 둔다."
+category = "availability"
+severity = "medium"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-835"
+owasp = "A04:2021"
+
+[pattern]
+regex = "while\\s+True\\s*:"

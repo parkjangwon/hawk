@@ -1,0 +1,13 @@
+id = "korea.py.path-traversal"
+name = "Path traversal in file access"
+description = "입력데이터 검증 및 표현 - 경로 조작 및 자원 삽입(가-3): 외부 입력으로 만든 경로를 open() 등에 전달하면 임의 파일 접근이 가능하다."
+recommendation = "경로를 정규화·검증하고 허용된 기본 디렉터리 내부인지 확인한다."
+category = "path-traversal"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-22"
+owasp = "A01:2021"
+
+[pattern]
+regex = "open\\s*\\([^\"']"

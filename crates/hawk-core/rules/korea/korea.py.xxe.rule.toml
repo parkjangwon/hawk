@@ -1,0 +1,14 @@
+id = "korea.py.xxe"
+name = "Improper XML external entity reference"
+description = "입력데이터 검증 및 표현 - 부적절한 XML 외부 개체 참조(가-8): xml.etree.ElementTree·lxml 사용 시 외부 엔티티를 허용하면 XXE 공격이 가능하다."
+recommendation = "lxml 사용 시 resolve_entities=False로 설정하고 ElementTree 사용을 피한다."
+category = "xxe"
+severity = "high"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-611"
+owasp = "A05:2021"
+
+[pattern]
+regex = "xml\\.etree\\.ElementTree|resolve_entities\\s*=\\s*True|lxml\\.etree"
+not-regex = "resolve_entities\\s*=\\s*False"

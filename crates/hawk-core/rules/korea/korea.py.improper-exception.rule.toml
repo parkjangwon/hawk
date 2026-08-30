@@ -1,0 +1,13 @@
+id = "korea.py.improper-exception"
+name = "Improper exception handling"
+description = "에러처리 - 부적절한 예외 처리(라-3): 예외를 삼키는 빈 except 블록은 오류 상황을 숨긴다."
+recommendation = "예외를 로깅하고 복구하거나 상위로 전파한다. except: pass를 금지한다."
+category = "error-handling"
+severity = "low"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-390"
+owasp = "A04:2021"
+
+[pattern]
+regex = "except\\s+[^:]*:\\s*pass"

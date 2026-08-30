@@ -1,0 +1,13 @@
+id = "korea.py.error-message-info"
+name = "Sensitive error details exposed"
+description = "에러처리 - 오류 메시지 정보노출(라-1): traceback 출력을 클라이언트에 노출하면 내부 구현 정보가 드러난다."
+recommendation = "traceback은 서버 측 로그로만 남기고 클라이언트에는 일반화된 오류를 반환한다."
+category = "information-disclosure"
+severity = "medium"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-209"
+owasp = "A01:2021"
+
+[pattern]
+regex = "traceback\\.(print_exc|format_exc|print_stack|print_exception)\\s*\\("

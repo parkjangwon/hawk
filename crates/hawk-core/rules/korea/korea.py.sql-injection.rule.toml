@@ -1,0 +1,13 @@
+id = "korea.py.sql-injection"
+name = "SQL injection via dynamic query construction"
+description = "입력데이터 검증 및 표현 - SQL 삽입(가-1): 외부 입력을 문자열 연결·포맷팅으로 쿼리에 넣으면 SQL 삽입 공격이 가능하다."
+recommendation = "파라미터 바인딩(placeholder) 쿼리 또는 ORM 파라미터화를 사용한다."
+category = "sql-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-89"
+owasp = "A03:2021"
+
+[pattern]
+regex = "\\.execute\\s*\\([^)]*(\\+|%\\s|\\{|f[\"'])"

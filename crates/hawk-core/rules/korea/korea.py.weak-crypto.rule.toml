@@ -1,0 +1,13 @@
+id = "korea.py.weak-crypto"
+name = "Use of weak cryptographic hash"
+description = "보안기능 - 취약한 암호화 알고리즘 사용(나-4): MD5/SHA-1 해시는 충돌 공격에 취약하여 무결성·인증 용도로 부적절하다."
+recommendation = "SHA-256 이상의 해시 알고리즘을 사용한다."
+category = "weak-crypto"
+severity = "high"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-327"
+owasp = "A02:2021"
+
+[pattern]
+regex = "hashlib\\.(md5|sha1|md4)\\s*\\("
