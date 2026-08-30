@@ -382,6 +382,99 @@ el.outerHTML = build("x", { q });
     }
 
     #[test]
+    fn taint_in_else_branch_is_not_erased_by_source_order() {
+        // Regression: with a single sequential state, the else branch would
+        // overwrite the then-branch taint and the sink would be missed.
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st, boolean cond) {
+        String q = "SELECT 1";
+        if (cond) {
+            q = req.getParameter("q");
+        } else {
+            q = "clean";
+        }
+        st.executeQuery(q);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "taint in one branch must survive the join"
+        );
+    }
+
+    #[test]
+    fn taint_is_cleared_when_both_branches_sanitize() {
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st, boolean cond) {
+        String q = req.getParameter("q");
+        if (cond) {
+            q = escapeSql(q);
+        } else {
+            q = escapeSql(q);
+        }
+        st.executeQuery(q);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert!(
+            findings.is_empty(),
+            "sanitizing both branches must clear taint"
+        );
+    }
+
+    #[test]
+    fn taint_assigned_only_in_loop_body_survives_loop() {
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String q = "SELECT 1";
+        for (int i = 0; i < 3; i++) {
+            q = req.getParameter("q");
+        }
+        st.executeQuery(q);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(findings.len(), 1, "loop body may taint q");
+    }
+
+    #[test]
+    fn clean_loop_assignment_keeps_may_tainted_entry() {
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st, boolean go) {
+        String q = req.getParameter("q");
+        while (go) {
+            q = "SELECT 1";
+        }
+        st.executeQuery(q);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "loop may not run; entry taint must be kept"
+        );
+    }
+
+    #[test]
     fn python_taint_is_sanitized_by_escape() {
         let source = "def view():\n    q = request.args.get('q')\n    return escape(q)\n";
         let parser = TreeSitterParser {

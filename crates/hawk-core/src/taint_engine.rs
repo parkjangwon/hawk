@@ -76,6 +76,26 @@ fn assignment_kinds(language: Language) -> &'static [&'static str] {
     }
 }
 
+fn loop_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::Java => &[
+            "while_statement",
+            "do_statement",
+            "for_statement",
+            "enhanced_for_statement",
+        ],
+        Language::JavaScript | Language::TypeScript => &[
+            "while_statement",
+            "do_statement",
+            "for_statement",
+            "for_in_statement",
+        ],
+        Language::Python => &["while_statement", "for_statement"],
+        Language::Go => &["for_statement"],
+        Language::Unknown => &[],
+    }
+}
+
 fn call_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Java => &["method_invocation", "object_creation_expression"],
@@ -90,6 +110,9 @@ struct State<'a> {
     config: &'a TaintConfig,
     language: Language,
     tainted: HashSet<String>,
+    /// Variables assigned since the current branch/loop scope began. Used by
+    /// the branch join to distinguish "reassigned clean" from "never touched".
+    touched: HashSet<String>,
     findings: Vec<TaintFinding>,
     /// Functions declared in the analyzed file, keyed by name. Enables
     /// intra-file interprocedural taint propagation of return values.
@@ -103,6 +126,7 @@ impl<'a> State<'a> {
             config,
             language,
             tainted: HashSet::new(),
+            touched: HashSet::new(),
             findings: Vec::new(),
             methods: HashMap::new(),
         }
@@ -145,6 +169,17 @@ impl<'a> State<'a> {
         }
 
         match node.kind() {
+            "if_statement" => {
+                self.walk_if(node);
+                return;
+            }
+            kind if loop_kinds(self.language).contains(&kind) => {
+                self.walk_loop(node);
+                return;
+            }
+            _ => {}
+        }
+        match node.kind() {
             kind if declaration_kinds(self.language).contains(&kind) => {
                 self.handle_local_declaration(node)
             }
@@ -155,6 +190,72 @@ impl<'a> State<'a> {
         for child in node.children() {
             self.walk(child);
         }
+    }
+
+    /// Path-sensitive branch handling: analyze the then/else branches from the
+    /// pre-branch state and merge with a union at the join, so a variable
+    /// tainted in one branch is not erased by the other branch (or by source
+    /// order).
+    fn walk_if(&mut self, node: AstNode<'_>) {
+        let entry = self.tainted.clone();
+        let consequence = node.child_by_field_name("consequence");
+        let alternative = node.child_by_field_name("alternative");
+
+        let mut then_state = entry.clone();
+        let mut then_touched = HashSet::new();
+        if let Some(child) = consequence {
+            self.tainted = entry.clone();
+            self.touched.clear();
+            self.walk(child);
+            then_state = self.tainted.clone();
+            then_touched = std::mem::take(&mut self.touched);
+        }
+        let mut else_state = entry.clone();
+        let mut else_touched = HashSet::new();
+        if let Some(child) = alternative {
+            self.tainted = entry.clone();
+            self.touched.clear();
+            self.walk(child);
+            else_state = self.tainted.clone();
+            else_touched = std::mem::take(&mut self.touched);
+        }
+
+        // Join: a variable that was reassigned in a branch takes that branch's
+        // value; an untouched variable keeps its entry value. Across branches,
+        // the variable is tainted if either executed branch leaves it tainted.
+        let mut vars: HashSet<String> = entry.clone();
+        vars.extend(then_state.iter().cloned());
+        vars.extend(else_state.iter().cloned());
+        let mut merged = HashSet::new();
+        for variable in vars {
+            let effective_then = if then_touched.contains(&variable) {
+                then_state.contains(&variable)
+            } else {
+                entry.contains(&variable)
+            };
+            let effective_else = if else_touched.contains(&variable) {
+                else_state.contains(&variable)
+            } else {
+                entry.contains(&variable)
+            };
+            if effective_then || effective_else {
+                merged.insert(variable);
+            }
+        }
+        self.tainted = merged;
+        self.touched.clear();
+    }
+
+    /// Loop handling: the body may run zero times, so after the loop keep the
+    /// union of the entry state and the body state (may-be-tainted).
+    fn walk_loop(&mut self, node: AstNode<'_>) {
+        let entry = self.tainted.clone();
+        for child in node.children() {
+            self.walk(child);
+        }
+        let body_state = std::mem::take(&mut self.tainted);
+        self.tainted = entry;
+        self.tainted.extend(body_state);
     }
 
     fn handle_local_declaration(&mut self, node: AstNode<'_>) {
@@ -178,6 +279,7 @@ impl<'a> State<'a> {
             .child_by_field_name("value")
             .and_then(|v| v.text(self.source))
             .map(String::from);
+        self.touched.insert(name.clone());
         match value {
             Some(value) => self.apply_assignment(&name, &value),
             None => {
@@ -242,6 +344,7 @@ impl<'a> State<'a> {
     /// clears it. If the value is a sanitizer call, the target is explicitly
     /// marked clean.
     fn apply_assignment(&mut self, target: &str, value: &str) {
+        self.touched.insert(target.to_string());
         if self.is_sanitizer_call(value) {
             self.tainted.remove(target);
         } else if self.expr_is_tainted(value, &mut Vec::new()) {
@@ -308,6 +411,7 @@ impl<'a> State<'a> {
         chain: &mut Vec<String>,
     ) -> bool {
         let saved = std::mem::take(&mut self.tainted);
+        let saved_touched = std::mem::take(&mut self.touched);
         let params: Vec<AstNode<'a>> = method
             .child_by_field_name("parameters")
             .map(|params| {
@@ -352,6 +456,7 @@ impl<'a> State<'a> {
             }
         }
         self.tainted = saved;
+        self.touched = saved_touched;
         result
     }
 
