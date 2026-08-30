@@ -733,4 +733,99 @@ class UserService {
         );
         assert!(findings.is_empty(), "literal arguments must stay clean");
     }
+
+    #[test]
+    fn cross_file_taint_follows_multi_hop_chains() {
+        // controller -> service -> repository, with the sink in the repository.
+        let controller = r#"
+class Controller {
+    void handle(UserService service, javax.servlet.http.HttpServletRequest req) {
+        service.deleteUser(req.getParameter("id"));
+    }
+}
+"#;
+        let service = r#"
+class UserService {
+    void deleteUser(String userId, UserRepository repo) {
+        repo.delete(userId);
+    }
+}
+"#;
+        let repository = r#"
+class UserRepository {
+    void delete(String userId, java.sql.Statement st) {
+        st.executeQuery("DELETE FROM users WHERE id='" + userId + "'");
+    }
+}
+"#;
+        let graph = crate::code_graph::CodeGraph::build(vec![
+            indexed_file("Controller.java", Language::Java, controller),
+            indexed_file("UserService.java", Language::Java, service),
+            indexed_file("UserRepository.java", Language::Java, repository),
+        ]);
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(controller).unwrap();
+        let findings = crate::taint::analyze_with_graph(
+            &tree,
+            controller,
+            &sqli_config(),
+            Language::Java,
+            Some(&graph),
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "taint must travel controller -> service -> repository"
+        );
+        assert!(
+            findings[0].sink.contains("st.executeQuery"),
+            "finding must name the deep sink: {}",
+            findings[0].sink
+        );
+    }
+
+    #[test]
+    fn cross_file_variable_argument_carries_taint_into_callee() {
+        // The tainted value reaches the cross-file callee through a local
+        // variable, not a direct source call in the argument.
+        let controller = r#"
+class Controller {
+    void handle(UserService service, java.sql.Statement st, javax.servlet.http.HttpServletRequest req) {
+        String id = req.getParameter("id");
+        String sql = service.buildQuery(id);
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let service = r#"
+class UserService {
+    String buildQuery(String input) {
+        return "SELECT * FROM users WHERE id=" + input;
+    }
+}
+"#;
+        let graph = crate::code_graph::CodeGraph::build(vec![
+            indexed_file("Controller.java", Language::Java, controller),
+            indexed_file("UserService.java", Language::Java, service),
+        ]);
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(controller).unwrap();
+        let findings = crate::taint::analyze_with_graph(
+            &tree,
+            controller,
+            &sqli_config(),
+            Language::Java,
+            Some(&graph),
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "a tainted local variable passed across files must propagate"
+        );
+        assert_eq!(findings[0].sink, "st.executeQuery(sql)");
+    }
 }

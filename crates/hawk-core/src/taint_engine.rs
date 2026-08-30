@@ -504,9 +504,16 @@ impl<'a> State<'a> {
         args: &[String],
         chain: &mut Vec<String>,
     ) -> bool {
+        // Evaluate argument taint in the caller's context before the callee
+        // analysis clears the state; a variable argument is only recognized
+        // as tainted against the caller's tainted set.
+        let arg_tainted: Vec<bool> = args
+            .iter()
+            .map(|arg| self.expr_is_tainted(arg, chain))
+            .collect();
         let saved = std::mem::take(&mut self.tainted);
         let saved_touched = std::mem::take(&mut self.touched);
-        self.bind_params(method, source, args, chain);
+        self.bind_params(method, source, &arg_tainted);
         let mut result = false;
         for child in method.children() {
             self.walk_for_returns(child, source, chain, &mut result);
@@ -519,14 +526,10 @@ impl<'a> State<'a> {
         result
     }
 
-    /// Binds tainted caller arguments to the callee's parameters.
-    fn bind_params(
-        &mut self,
-        method: AstNode<'a>,
-        source: &'a str,
-        args: &[String],
-        chain: &mut Vec<String>,
-    ) {
+    /// Binds tainted caller arguments to the callee's parameters. The taint
+    /// flags are evaluated in the caller's context before the callee analysis
+    /// starts, so variable arguments propagate across hops.
+    fn bind_params(&mut self, method: AstNode<'a>, source: &'a str, arg_tainted: &[bool]) {
         let params: Vec<AstNode<'a>> = method
             .child_by_field_name("parameters")
             .map(|params| {
@@ -552,16 +555,14 @@ impl<'a> State<'a> {
             })
             .unwrap_or_default();
         for (index, param) in params.iter().enumerate() {
-            let Some(arg) = args.get(index) else {
+            if !arg_tainted.get(index).copied().unwrap_or(false) {
                 break;
-            };
-            if self.expr_is_tainted(arg, chain) {
-                if let Some(name) = param
-                    .child_by_field_name("name")
-                    .and_then(|n| n.text(source))
-                {
-                    self.tainted.insert(name.to_string());
-                }
+            }
+            if let Some(name) = param
+                .child_by_field_name("name")
+                .and_then(|n| n.text(source))
+            {
+                self.tainted.insert(name.to_string());
             }
         }
     }
@@ -668,9 +669,13 @@ impl<'a> State<'a> {
         args: &[String],
         chain: &mut Vec<String>,
     ) -> Option<String> {
+        let arg_tainted: Vec<bool> = args
+            .iter()
+            .map(|arg| self.expr_is_tainted(arg, chain))
+            .collect();
         let saved = std::mem::take(&mut self.tainted);
         let saved_touched = std::mem::take(&mut self.touched);
-        self.bind_params(method, source, args, chain);
+        self.bind_params(method, source, &arg_tainted);
         let mut sink = None;
         for child in method.children() {
             if let Some(found) = self.walk_for_sinks(child, source, chain) {
@@ -704,8 +709,19 @@ impl<'a> State<'a> {
         }
         if call_kinds(self.language).contains(&node.kind()) {
             if let Some(text) = node.text(source).map(String::from) {
-                if self.is_sink(&text) && self.expr_is_tainted(&text, chain) {
-                    return Some(text);
+                if self.is_sink(&text) {
+                    if self.expr_is_tainted(&text, chain) {
+                        return Some(text);
+                    }
+                } else if self.expr_is_tainted(&text, chain) {
+                    // One more hop: a tainted call that is not itself a sink
+                    // may reach a sink deeper in the chain (handler → service
+                    // → repository). Cycle-guarded via the chain.
+                    if let Some((name, args)) = parse_call(&text) {
+                        if let Some(sink) = self.callee_reaches_sink(&name, &args, chain) {
+                            return Some(sink);
+                        }
+                    }
                 }
             }
         }

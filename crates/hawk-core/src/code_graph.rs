@@ -102,6 +102,10 @@ pub struct CodeGraph {
     pub files: Vec<IndexedFile>,
     pub symbols: Vec<GraphSymbol>,
     pub edges: Vec<CallEdge>,
+    /// (file index, enclosing method line [0 = class scope], variable,
+    /// declared type) — used to resolve `service.deleteUser` to the right
+    /// `UserService.deleteUser` when several classes share a method name.
+    var_types: Vec<(usize, usize, String, String)>,
 }
 
 impl CodeGraph {
@@ -112,9 +116,16 @@ impl CodeGraph {
             files,
             symbols: Vec::new(),
             edges: Vec::new(),
+            var_types: Vec::new(),
         };
         for (file_index, file) in graph.files.iter().enumerate() {
-            collect_symbols(file.tree.root(), file, file_index, &mut graph.symbols);
+            collect_symbols(
+                file.tree.root(),
+                file,
+                file_index,
+                &mut graph.symbols,
+                &mut graph.var_types,
+            );
         }
         let mut pending = Vec::new();
         for file in &graph.files {
@@ -149,7 +160,32 @@ impl CodeGraph {
     /// preferring same-file definitions.
     fn resolve_callees(&mut self) {
         for edge in &mut self.edges {
-            let caller_file = self.symbols[edge.caller].file.clone();
+            let caller_symbol = &self.symbols[edge.caller];
+            let caller_file = caller_symbol.file.clone();
+            // Type-guided step first: `service.deleteUser` where `service` is
+            // declared as `UserService` resolves to `UserService.deleteUser`
+            // even when other classes define the same method name.
+            if let Some((var, method)) = edge.callee_text.split_once('.') {
+                for (file, line, variable, ty) in &self.var_types {
+                    if *file == caller_symbol.file_index
+                        && (*line == caller_symbol.line || *line == 0)
+                        && variable == var
+                    {
+                        let qualified = format!("{}.{}", ty, method);
+                        if let Some(index) = self
+                            .symbols
+                            .iter()
+                            .position(|symbol| symbol.qualified_name == qualified)
+                        {
+                            edge.callee = Some(index);
+                            break;
+                        }
+                    }
+                }
+                if edge.callee.is_some() {
+                    continue;
+                }
+            }
             // Receiver-style calls (`service.deleteUser`) resolve by their
             // final segment; `st.executeQuery` stays unresolved (library).
             let simple = edge
@@ -193,6 +229,49 @@ impl CodeGraph {
             })
             .map(|symbol| (symbol.file_index, symbol.line))
             .collect()
+    }
+
+    /// Structural summary: fan-in/fan-out extremes and the longest resolved
+    /// call chain (acyclic, memoized DFS).
+    pub fn metrics(&self) -> GraphMetrics {
+        let mut fan_in = vec![0usize; self.symbols.len()];
+        let mut fan_out = vec![0usize; self.symbols.len()];
+        for edge in &self.edges {
+            fan_out[edge.caller] += 1;
+            if let Some(callee) = edge.callee {
+                fan_in[callee] += 1;
+            }
+        }
+        let max_fan_in = (0..self.symbols.len())
+            .filter(|index| fan_in[*index] > 0)
+            .max_by_key(|index| fan_in[*index])
+            .map(|index| (index, fan_in[index]));
+        let max_fan_out = (0..self.symbols.len())
+            .filter(|index| fan_out[*index] > 0)
+            .max_by_key(|index| fan_out[*index])
+            .map(|index| (index, fan_out[index]));
+        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); self.symbols.len()];
+        for edge in &self.edges {
+            if let Some(callee) = edge.callee {
+                if !adjacency[edge.caller].contains(&callee) {
+                    adjacency[edge.caller].push(callee);
+                }
+            }
+        }
+        let mut memo: Vec<Option<usize>> = vec![None; self.symbols.len()];
+        let mut longest = 0usize;
+        for start in 0..self.symbols.len() {
+            longest = longest.max(longest_chain(start, &adjacency, &mut memo));
+        }
+        GraphMetrics {
+            roots: self.unused().len(),
+            leaves: (0..self.symbols.len())
+                .filter(|index| fan_out[*index] == 0)
+                .count(),
+            max_fan_in,
+            max_fan_out,
+            longest_chain: longest,
+        }
     }
 
     /// Symbols with no incoming call edges within the scanned code. Includes
@@ -264,6 +343,23 @@ impl CodeGraph {
                 ));
             }
         }
+        let metrics = self.metrics();
+        out.push_str(&format!(
+            "\nSummary: {} root(s) without callers, {} leaf/leaves without calls, longest resolved chain {} hop(s)\n",
+            metrics.roots, metrics.leaves, metrics.longest_chain
+        ));
+        if let Some((index, count)) = metrics.max_fan_in {
+            out.push_str(&format!(
+                "  most called: {} ({} caller(s))\n",
+                self.symbols[index].qualified_name, count
+            ));
+        }
+        if let Some((index, count)) = metrics.max_fan_out {
+            out.push_str(&format!(
+                "  most calls: {} ({} call(s))\n",
+                self.symbols[index].qualified_name, count
+            ));
+        }
         out
     }
 
@@ -326,6 +422,35 @@ impl CodeGraph {
     }
 }
 
+/// Structural summary of the architecture index.
+#[derive(Debug, Default)]
+pub struct GraphMetrics {
+    /// Symbols with no incoming call edges.
+    pub roots: usize,
+    /// Symbols with no outgoing call edges.
+    pub leaves: usize,
+    /// (symbol index, incoming edge count) of the most-called symbol.
+    pub max_fan_in: Option<(usize, usize)>,
+    /// (symbol index, outgoing edge count) of the most-calling symbol.
+    pub max_fan_out: Option<(usize, usize)>,
+    /// Longest resolved acyclic call chain, in hops.
+    pub longest_chain: usize,
+}
+
+/// Longest acyclic path out of `node` (memoized; back-edges contribute 0).
+fn longest_chain(node: usize, adjacency: &[Vec<usize>], memo: &mut Vec<Option<usize>>) -> usize {
+    if let Some(known) = memo[node] {
+        return known;
+    }
+    let best = adjacency[node]
+        .iter()
+        .map(|next| 1 + longest_chain(*next, adjacency, memo))
+        .max()
+        .unwrap_or(0);
+    memo[node] = Some(best);
+    best
+}
+
 impl GraphSymbol {
     fn kind_label(&self) -> &'static str {
         match self.kind {
@@ -341,9 +466,17 @@ fn collect_symbols(
     file: &IndexedFile,
     file_index: usize,
     out: &mut Vec<GraphSymbol>,
+    var_types: &mut Vec<(usize, usize, String, String)>,
 ) {
-    fn visit(node: AstNode<'_>, file: &IndexedFile, file_index: usize, out: &mut Vec<GraphSymbol>) {
+    fn visit(
+        node: AstNode<'_>,
+        file: &IndexedFile,
+        file_index: usize,
+        out: &mut Vec<GraphSymbol>,
+        var_types: &mut Vec<(usize, usize, String, String)>,
+    ) {
         if method_like_kinds(file.language).contains(&node.kind()) {
+            let line = node.start_position().row + 1;
             if let Some(name) = node
                 .child_by_field_name("name")
                 .and_then(|name| name.text(&file.source))
@@ -360,17 +493,92 @@ fn collect_symbols(
                     kind,
                     file: file.path.clone(),
                     file_index,
-                    line: node.start_position().row + 1,
+                    line,
                     language: file.language,
                 });
             }
+            collect_typed_vars(node, file, file_index, line, var_types);
             return; // do not descend into nested functions for symbols
         }
+        // Class-level fields are visible from every method of the class.
+        if file.language == Language::Java && node.kind() == "field_declaration" {
+            collect_typed_vars(node, file, file_index, 0, var_types);
+        }
         for child in node.children() {
-            visit(child, file, file_index, out);
+            visit(child, file, file_index, out, var_types);
         }
     }
-    visit(root, file, file_index, out);
+    visit(root, file, file_index, out, var_types);
+}
+
+/// Records the declared types of parameters and local variables inside a
+/// method (Java `UserService service`, TypeScript `service: UserService`),
+/// scoped to the enclosing method line.
+fn collect_typed_vars(
+    method: AstNode<'_>,
+    file: &IndexedFile,
+    file_index: usize,
+    line: usize,
+    var_types: &mut Vec<(usize, usize, String, String)>,
+) {
+    if !matches!(file.language, Language::Java | Language::TypeScript) {
+        return;
+    }
+    let mut push = |node: AstNode<'_>, source: &str| {
+        let Some(ty) = node
+            .child_by_field_name("type")
+            .and_then(|ty| ty.text(source))
+            .map(type_name)
+        else {
+            return;
+        };
+        let name = node
+            .child_by_field_name("name")
+            .or_else(|| {
+                node.child_by_field_name("pattern")
+                    .and_then(|pattern| pattern.child_by_field_name("name"))
+            })
+            .and_then(|name| name.text(source))
+            .map(String::from);
+        if let Some(name) = name {
+            var_types.push((file_index, line, name, ty));
+        }
+    };
+    // Parameters: formal_parameter (Java), typed_parameter (TypeScript).
+    if let Some(parameters) = method.child_by_field_name("parameters") {
+        for param in parameters.children() {
+            if matches!(
+                param.kind(),
+                "formal_parameter"
+                    | "typed_parameter"
+                    | "typed_default_parameter"
+                    | "required_parameter"
+            ) {
+                push(param, &file.source);
+            }
+        }
+    }
+    // Local declarations and (for Java) class fields: variable_declarator
+    // exposes the `type` on its declaration/field parent.
+    for child in method.children() {
+        if matches!(
+            child.kind(),
+            "local_variable_declaration" | "field_declaration" | "variable_declaration"
+        ) {
+            push(child, &file.source);
+        }
+    }
+}
+
+/// `java.util.List<User>` → `List`; `UserService` stays as-is.
+fn type_name(text: &str) -> String {
+    let simple = text.rsplit('.').next().unwrap_or(text);
+    simple
+        .split('<')
+        .next()
+        .unwrap_or(simple)
+        .trim()
+        .to_string()
 }
 
 /// Best-effort `Class.method` qualification by walking enclosing type nodes.
@@ -573,6 +781,72 @@ class A {
             .collect();
         assert!(names.contains(&"dead"));
         assert!(!names.contains(&"used"));
+    }
+
+    #[test]
+    fn type_guided_resolution_distinguishes_same_named_methods() {
+        let graph = CodeGraph::build(vec![indexed(
+            "App.java",
+            Language::Java,
+            r#"
+class A {
+    void handle(B b, C c) {
+        b.run();
+        c.run();
+    }
+}
+class B { void run() {} }
+class C { void run() {} }
+"#,
+        )]);
+        let b_edge = graph
+            .edges
+            .iter()
+            .find(|edge| edge.callee_text == "b.run")
+            .expect("b.run edge");
+        assert_eq!(
+            graph.symbols[b_edge.callee.unwrap()].qualified_name,
+            "B.run",
+            "parameter type B must guide resolution"
+        );
+        let c_edge = graph
+            .edges
+            .iter()
+            .find(|edge| edge.callee_text == "c.run")
+            .expect("c.run edge");
+        assert_eq!(
+            graph.symbols[c_edge.callee.unwrap()].qualified_name,
+            "C.run",
+            "parameter type C must guide resolution"
+        );
+    }
+
+    #[test]
+    fn metrics_report_fan_in_fan_out_and_longest_chain() {
+        let graph = CodeGraph::build(vec![indexed(
+            "App.java",
+            Language::Java,
+            r#"
+class A {
+    void main(B b, C c, D d) {
+        b.h1();
+        b.h1();
+        c.h2();
+    }
+}
+class B { void h1(D d) { d.h3(); } }
+class C { void h2(D d) { d.h3(); } }
+class D { void h3() {} }
+"#,
+        )]);
+        let metrics = graph.metrics();
+        assert_eq!(metrics.longest_chain, 2, "A.main -> B.h1 -> D.h3");
+        let (fan_in_index, fan_in) = metrics.max_fan_in.expect("fan-in exists");
+        assert_eq!(graph.symbols[fan_in_index].qualified_name, "D.h3");
+        assert_eq!(fan_in, 2);
+        let (fan_out_index, fan_out) = metrics.max_fan_out.expect("fan-out exists");
+        assert_eq!(graph.symbols[fan_out_index].qualified_name, "A.main");
+        assert_eq!(fan_out, 3);
     }
 
     #[test]

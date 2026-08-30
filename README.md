@@ -73,9 +73,15 @@ hawk graph ./src --format json          # machine-readable graph
 hawk graph ./src --format mermaid       # flowchart source (mermaid renderer)
 ```
 
+The text listing ends with a summary (roots/leaves, most-called and
+most-calling symbols, longest resolved call chain) for quick architecture
+review, and receiver calls are resolved through declared types
+(`UserService service` → `service.deleteUser` = `UserService.deleteUser`).
+
 The same index powers cross-file taint analysis during normal scans: a sink
-inside a service class reached from a controller is reported at the call site
-(handler → service → repository scenarios).
+inside a service class reached from a controller is reported at the call site,
+following multi-hop chains (handler → service → repository) with cycle
+guards.
 
 These modes keep Hawk useful without sending the source to an external AI/SaaS
 service; analysis stays fully local.
