@@ -10,6 +10,7 @@ pub mod fixture;
 pub mod git;
 pub mod language;
 pub mod pack;
+mod pack_load;
 pub mod parser;
 pub mod report;
 pub mod reporter;
