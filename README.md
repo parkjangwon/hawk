@@ -26,6 +26,31 @@ Hawk is intentionally not a competitor to SonarQube or an attempt to reproduce a
 - **Developer-first** — `hawk` should be useful immediately with zero configuration, while advanced users can customize policies deeply.
 - **English reports** — human-readable reports use English to maximize portability and reuse across teams and countries.
 
+## Installation
+
+One-line install (macOS/Linux, x86_64 and arm64) — downloads the latest
+release binary for your platform to `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/parkjangwon/hawk/main/scripts/install.sh | bash
+```
+
+Re-running the script updates hawk to the latest release. Options:
+
+- `HAWK_INSTALL_DIR=/custom/bin` — install directory (default `~/.local/bin`)
+- `HAWK_VERSION=v0.1.0` — pin a specific release instead of `latest`
+
+Clean uninstall (binary + user data + `./.hawk` cache in the current
+directory):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/parkjangwon/hawk/main/scripts/uninstall.sh | bash
+```
+
+Prebuilt binaries for Linux (x86_64/aarch64), macOS (x86_64/aarch64), and
+Windows (x86_64) are published on the
+[releases page](https://github.com/parkjangwon/hawk/releases).
+
 ## Basic Usage
 
 The CLI should keep the common case extremely simple:
