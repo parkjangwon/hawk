@@ -806,13 +806,27 @@ pub struct PackRegistry {
     pub packs: Vec<(PackMeta, Vec<CompiledRule>)>,
 }
 
+/// True when `left` is a strictly higher semver-ish version than `right`.
+/// Compares numeric components (major.minor.patch); non-numeric or shorter
+/// components are treated as zero, making it deterministic and total.
+fn semver_gt(left: &str, right: &str) -> bool {
+    fn parts(v: &str) -> [u64; 3] {
+        let mut out = [0u64; 3];
+        for (i, chunk) in v.split('.').take(3).enumerate() {
+            out[i] = chunk.parse().unwrap_or(0);
+        }
+        out
+    }
+    parts(left) > parts(right)
+}
+
 /// Validates a pack directory and returns its manifest metadata (used by
 /// `hawk rule validate`). Invalid packs fail loudly.
 pub fn validate_pack_dir(dir: &Path) -> Result<PackMeta, PackError> {
     // Reuse the loader; any parse/validate error propagates.
     let (meta, rules) = load_pack_dir(dir)?;
     if let Some(min) = &meta.min_hawk {
-        if min.as_str() > env!("CARGO_PKG_VERSION") {
+        if semver_gt(min, env!("CARGO_PKG_VERSION")) {
             return Err(PackError::Validate {
                 message: format!(
                     "pack '{}' requires hawk >= {min}, but this is {}",
@@ -1026,6 +1040,15 @@ mod tests {
         assert!(!findings[0].fingerprint.is_empty());
 
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn semver_comparison_handles_numeric_components() {
+        assert!(semver_gt("0.10.0", "0.9.0"));
+        assert!(!semver_gt("0.9.0", "0.10.0"));
+        assert!(!semver_gt("1.0.0", "1.0.0"));
+        assert!(semver_gt("2.0.0", "1.99.99"));
+        assert!(!semver_gt("0.1.0", "0.1.0-beta"));
     }
 
     #[test]

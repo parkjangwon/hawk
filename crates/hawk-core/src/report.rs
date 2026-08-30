@@ -32,7 +32,7 @@ impl ReportMetadata {
             timestamp: now_rfc3339(),
             rule_packs: result.pack_names.clone(),
             rule_count: result.rule_count,
-            files_scanned: result.discovered_files,
+            files_scanned: result.scanned_files,
             files_skipped: result.skipped_files,
             duration_ms,
         }
@@ -388,12 +388,46 @@ impl HtmlReporter {
     }
 }
 
+/// Current UTC timestamp in RFC3339 form (`YYYY-MM-DDTHH:MM:SSZ`).
+/// Implemented without a date-time dependency to keep the local binary lean.
 fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| format!("{}", d.as_secs()))
-        .unwrap_or_else(|_| "0".into())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format_rfc3339_utc(secs)
+}
+
+fn format_rfc3339_utc(unix_seconds: u64) -> String {
+    const SECS_PER_DAY: u64 = 86_400;
+    let days = unix_seconds / SECS_PER_DAY;
+    let day_seconds = unix_seconds % SECS_PER_DAY;
+    let hour = day_seconds / 3_600;
+    let minute = day_seconds % 3_600 / 60;
+    let second = day_seconds % 60;
+
+    // Howard Hinnant's civil-from-days conversion (proleptic Gregorian).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z",
+        year = year,
+        month = month,
+        day = day,
+        hour = hour,
+        minute = minute,
+        second = second,
+    )
 }
 
 fn html_escape(value: &str) -> String {
@@ -439,6 +473,7 @@ mod tests {
                 message: "parse failed".into(),
             }],
             findings,
+            scanned_files: 1,
             rule_count: 1,
             pack_names: vec!["test".into()],
         }
@@ -473,6 +508,22 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_format_is_rfc3339() {
+        // Epoch: 1970-01-01T00:00:00Z
+        assert_eq!(format_rfc3339_utc(0), "1970-01-01T00:00:00Z");
+        // 2024-02-29 (leap day) = 1_709_164_800
+        assert_eq!(format_rfc3339_utc(1_709_164_800), "2024-02-29T00:00:00Z");
+        // Known boundary: 2000-01-01T00:00:00Z = 946_684_800
+        assert_eq!(format_rfc3339_utc(946_684_800), "2000-01-01T00:00:00Z");
+        // Time-of-day check: 2023-01-01T01:02:03Z = 1_672_534_023
+        assert_eq!(format_rfc3339_utc(1_672_534_923), "2023-01-01T01:02:03Z");
+        let current = now_rfc3339();
+        assert_eq!(current.len(), 20);
+        assert!(current.ends_with('Z'));
+        assert!(current.contains('T'));
+    }
+
+    #[test]
     fn html_escapes_finding_text() {
         let mut findings = Findings::new();
         findings.push(Finding::new(
@@ -494,6 +545,7 @@ mod tests {
             skipped_files: 0,
             issues: vec![],
             findings,
+            scanned_files: 1,
             rule_count: 1,
             pack_names: vec!["test".into()],
         };

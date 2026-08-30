@@ -68,6 +68,7 @@ impl Scanner {
         result.rule_count = self.packs.count();
         result.pack_names = self.packs.pack_names();
         for file_result in per_file {
+            result.scanned_files += file_result.scanned_files;
             result.skipped_files += file_result.skipped_files;
             result.issues.extend(file_result.issues);
             for finding in file_result.findings.iter() {
@@ -106,6 +107,7 @@ impl Scanner {
                     for finding in cached {
                         result.findings.push(finding);
                     }
+                    result.scanned_files = 1;
                     return result;
                 }
             }
@@ -133,6 +135,7 @@ impl Scanner {
             }
         };
 
+        result.scanned_files = 1;
         if tree.has_error() {
             // Analysis of a partially-parsed tree is incomplete; run rules anyway
             // but surface the issue so a degraded result can never look likea clean one.
@@ -185,6 +188,7 @@ pub struct FileIssue {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     pub discovered_files: usize,
+    pub scanned_files: usize,
     pub skipped_files: usize,
     pub issues: Vec<FileIssue>,
     pub findings: Findings,

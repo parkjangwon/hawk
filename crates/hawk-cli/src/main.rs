@@ -139,16 +139,10 @@ where
         }
     }
 
-    let mut scanner = match Scanner::built_in() {
-        Ok(scanner) => scanner.with_excludes(config.exclude.clone()),
-        Err(error) => return fatal(error.to_string()),
+    let mut scanner = match build_scanner(&config, &packs, &pack_dirs) {
+        Ok(scanner) => scanner,
+        Err(error) => return fatal(error),
     };
-    if let Err(error) = scanner.load_pack_dirs(&pack_dirs) {
-        return fatal(error.to_string());
-    }
-    if !packs.is_empty() {
-        scanner.select_packs(&packs);
-    }
 
     // Git-aware modes resolve explicit paths to changed/staged files first.
     let targets = if let Some(mode) = git_mode {
@@ -263,6 +257,26 @@ fn config_format(config: &Config) -> Option<String> {
         ReportFormat::Sarif => Some("sarif".to_string()),
         ReportFormat::Html => Some("html".to_string()),
     }
+}
+
+/// Builds a scanner applying project configuration and selected packs.
+/// Shared by normal scans and baseline commands so their rule set and scope
+/// semantics stay identical.
+fn build_scanner(
+    config: &Config,
+    packs: &[String],
+    pack_dirs: &[PathBuf],
+) -> Result<Scanner, String> {
+    let mut scanner = Scanner::built_in()
+        .map_err(|error| error.to_string())?
+        .with_excludes(config.exclude.clone());
+    scanner
+        .load_pack_dirs(pack_dirs)
+        .map_err(|e| e.to_string())?;
+    if !packs.is_empty() {
+        scanner.select_packs(packs);
+    }
+    Ok(scanner)
 }
 
 fn parse_severity(value: &str) -> Option<Severity> {
@@ -460,7 +474,10 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
             };
             println!("  {} {label}: {}", annotation.line, annotation.rule_id);
         }
-        let verdicts = hawk_core::fixture::evaluate(&annotations, &findings, |_| true);
+        let rule_id = rule.id().to_string();
+        let verdicts = hawk_core::fixture::evaluate(&annotations, &findings, |annotated_id| {
+            annotated_id == rule_id
+        });
         if verdicts.is_empty() {
             println!("ok: {} passed", rule.id());
             return RunOutcome::Clean;
@@ -539,12 +556,16 @@ fn run_baseline_command(args: &[String]) -> RunOutcome {
     let Some(sub) = args.first() else {
         return fatal("missing baseline subcommand (create, update, status)".into());
     };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let path = hawk_core::baseline::baseline_path(&cwd);
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => return fatal(format!("config error: {error}")),
+    };
+    let path = hawk_core::baseline::baseline_path(&config.root_dir());
+    let cache_dir = config.data_dir().join("cache");
     match sub.as_str() {
-        "create" => run_baseline_create(&path, cwd.join(".hawk").join("cache")),
-        "update" => run_baseline_create(&path, cwd.join(".hawk").join("cache")),
-        "status" => run_baseline_status(&path, cwd.join(".hawk").join("cache")),
+        "create" => run_baseline_create(&config, &path, &cache_dir),
+        "update" => run_baseline_create(&config, &path, &cache_dir),
+        "status" => run_baseline_status(&config, &path, &cache_dir),
         "help" | "--help" | "-h" => {
             println!("Usage: hawk baseline <create|update|status>");
             RunOutcome::Help
@@ -553,11 +574,15 @@ fn run_baseline_command(args: &[String]) -> RunOutcome {
     }
 }
 
-/// Scans the current directory and stores all finding fingerprints as the new baseline.
-fn run_baseline_create(path: &std::path::Path, cache_dir: PathBuf) -> RunOutcome {
-    let scanner = match Scanner::built_in() {
-        Ok(s) => s.with_cache(cache_dir),
-        Err(error) => return fatal(error.to_string()),
+/// Scans the configured scope and stores all finding fingerprints as the new baseline.
+fn run_baseline_create(
+    config: &Config,
+    path: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> RunOutcome {
+    let scanner = match build_scanner(config, &config.packs, &config.pack_dirs) {
+        Ok(s) => s.with_cache(cache_dir.to_path_buf()),
+        Err(error) => return fatal(error),
     };
     let result = match scanner.scan_paths(&[]) {
         Ok(result) => result,
@@ -583,14 +608,18 @@ fn run_baseline_create(path: &std::path::Path, cache_dir: PathBuf) -> RunOutcome
 }
 
 /// Compares the current findings against an existing baseline.
-fn run_baseline_status(path: &std::path::Path, cache_dir: PathBuf) -> RunOutcome {
+fn run_baseline_status(
+    config: &Config,
+    path: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> RunOutcome {
     let baseline = match hawk_core::baseline::Baseline::load(path) {
         Ok(baseline) => baseline,
         Err(error) => return fatal(format!("baseline error: {error}")),
     };
-    let scanner = match Scanner::built_in() {
-        Ok(scanner) => scanner.with_cache(cache_dir),
-        Err(error) => return fatal(error.to_string()),
+    let scanner = match build_scanner(config, &config.packs, &config.pack_dirs) {
+        Ok(scanner) => scanner.with_cache(cache_dir.to_path_buf()),
+        Err(error) => return fatal(error),
     };
     let result = match scanner.scan_paths(&[]) {
         Ok(result) => result,

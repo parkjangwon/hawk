@@ -97,6 +97,9 @@ mod tests {
             skipped_files: 0,
             issues,
             findings,
+            scanned_files: 1,
+            rule_count: 0,
+            pack_names: Vec::new(),
         }
     }
 

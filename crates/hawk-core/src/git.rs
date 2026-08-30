@@ -61,7 +61,10 @@ pub fn changed_files(dir: &Path, scope: GitScope) -> Result<Vec<PathBuf>, GitErr
         let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
         if end > 0 {
             let name = String::from_utf8_lossy(&rest[..end]).to_string();
-            paths.push(dir.join(name));
+            let path = dir.join(name);
+            if path.is_file() {
+                paths.push(path);
+            }
         }
         if end == rest.len() {
             break;
