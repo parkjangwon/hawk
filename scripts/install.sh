@@ -12,7 +12,7 @@ REPO="parkjangwon/hawk"
 INSTALL_DIR="${HAWK_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${HAWK_VERSION:-latest}"
 
-# Map the host platform to the release asset name (hawk-<arch>-<os>).
+# Map the host platform to the release asset name (hawk-<arch>-<os>.tar.gz).
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
@@ -34,23 +34,23 @@ esac
 TARGET="hawk-${arch_triple}-${os_triple}"
 
 if [ "$VERSION" = "latest" ]; then
-    URL="https://github.com/${REPO}/releases/latest/download/${TARGET}"
+    URL="https://github.com/${REPO}/releases/latest/download/${TARGET}.tar.gz"
 else
-    URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARGET}"
+    URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARGET}.tar.gz"
 fi
 
 mkdir -p "$INSTALL_DIR"
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 
 echo "hawk: downloading ${TARGET} (${VERSION})..."
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$URL" -o "$tmp"
+    curl -fsSL "$URL" -o "$tmp_dir/hawk.tar.gz"
 else
-    wget -qO "$tmp" "$URL"
+    wget -qO "$tmp_dir/hawk.tar.gz" "$URL"
 fi
-chmod +x "$tmp"
-install -m 0755 "$tmp" "$INSTALL_DIR/hawk"
+tar -xzf "$tmp_dir/hawk.tar.gz" -C "$tmp_dir"
+install -m 0755 "$tmp_dir/hawk" "$INSTALL_DIR/hawk"
 
 echo "hawk: installed $( "$INSTALL_DIR/hawk" --version ) to $INSTALL_DIR/hawk"
 case ":$PATH:" in
