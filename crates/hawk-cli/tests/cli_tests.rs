@@ -225,6 +225,41 @@ fn git_changed_ignores_deleted_files() {
 }
 
 #[test]
+fn oversized_files_are_skipped_explicitly_not_silently() {
+    let dir = temp_dir("oversize");
+    let mut content = String::from("class Big { void m(){\n");
+    content.push_str(&"x = 1;\n".repeat(2_000_000)); // > 8 MiB
+    content.push_str("} }\n");
+    write(&dir.join("Big.java"), &content);
+
+    let output = run_in(&dir, &["."]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "degraded scan expected for oversized file"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("exceeds"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rule_test_rejects_language_mismatched_fixtures() {
+    let dir = temp_dir("rulelang");
+    write(&dir.join("f.js"), "eval(x);\n");
+    let rule_file = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../hawk-core/rules/java/java.security.runtime-exec.rule.toml"
+    ));
+    let output = run_in(&dir, &["rule", "test", rule_file.to_str().unwrap(), "f.js"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "language mismatch must be fatal"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn rule_test_rejects_unknown_rule_annotations() {
     let dir = temp_dir("ruletest");
     write(&dir.join("f.java"), "// ruleid: no.such.rule\nx();\n");

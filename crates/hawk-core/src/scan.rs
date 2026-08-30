@@ -100,6 +100,25 @@ impl Scanner {
         path: &Path,
     ) -> ScanResult {
         let mut result = ScanResult::new(1);
+
+        // Resource guard: gigantic single files can exhaust memory during
+        // regex/AST analysis. Skip them explicitly (observable, never silent).
+        const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+        if let Ok(metadata) = fs::metadata(path) {
+            if metadata.len() > MAX_SOURCE_BYTES {
+                result.push_issue(
+                    FileIssueKind::Read,
+                    path.to_path_buf(),
+                    format!(
+                        "file exceeds {} byte(s) limit ({} bytes); skipped for safety",
+                        MAX_SOURCE_BYTES,
+                        metadata.len()
+                    ),
+                );
+                return result;
+            }
+        }
+
         // Cache fast path: unchanged files reuse previous findings.
         if let Some(cache) = cache {
             if let Ok(hash) = cache::source_hash_of_file(path) {

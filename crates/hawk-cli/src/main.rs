@@ -455,6 +455,19 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
             return fatal(format!("unable to read fixture '{fixture}': {error}"));
         }
     };
+    // Language compatibility: a rule must not run against a fixture written in
+    // a language it does not declare.
+    let fixture_language = hawk_core::language::Language::from_path(std::path::Path::new(&fixture));
+    if fixture_language != hawk_core::language::Language::Unknown
+        && !rule.languages().contains(&fixture_language)
+    {
+        return fatal(format!(
+            "rule '{}' does not apply to language {:?} (fixture '{fixture}')",
+            rule.id(),
+            fixture_language
+        ));
+    }
+
     // Taint/query rules operate on the syntax tree; pattern rules on text.
     // Always prefer the parsed path when a parser exists for the fixture.
     let findings = match parse_fixture_for_language(&source, &fixture) {
