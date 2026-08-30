@@ -236,7 +236,13 @@ impl CompiledRule {
         path: &std::path::Path,
     ) -> Vec<Finding> {
         if let Some(taint) = &self.def.taint {
-            return crate::taint::analyze_java(tree, source, taint)
+            let language = self
+                .def
+                .languages
+                .first()
+                .copied()
+                .unwrap_or(Language::Java);
+            return crate::taint::analyze(tree, source, taint, language)
                 .iter()
                 .map(|tf| {
                     crate::taint::to_finding(

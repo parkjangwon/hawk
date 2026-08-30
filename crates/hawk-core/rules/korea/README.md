@@ -64,8 +64,8 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 ## JavaScript Rules (Javascript 시큐어코딩 가이드, 2023년 개정본)
 
 동일 배포처의 **자바스크립트 시큐어코딩 가이드(2023년 개정본)** 구현단계 보안약점
-항목에 매핑된 규칙입니다. JS 데이터플로우(taint) 엔진은 아직 미지원이므로 패턴
-기반으로 구현했습니다.
+항목에 매핑된 규칙입니다. taint 규칙(가-1, 가-4 XSS 등)은 변수·함수 흐름을
+추적하는 데이터플로우 엔진(JS/Python 지원)을 사용합니다.
 
 ### 가. 입력데이터 검증 및 표현
 
@@ -74,6 +74,7 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 | `korea.js.sql-injection` | 가-1 SQL 삽입 | critical | CWE-89 / A03 |
 | `korea.js.code-injection` (js pack: `javascript.security.eval`) | 가-2 코드 삽입 | critical | CWE-95 / A03 |
 | `korea.js.path-traversal` | 가-3 경로 조작 및 자원 삽입 | high | CWE-22 / A01 |
+| `korea.js.xss` | 가-4 크로스사이트 스크립트(DOM sink taint 추적) | high | CWE-79 / A03 |
 | `korea.js.xss-react` | 가-4 크로스사이트 스크립트(React dangerouslySetInnerHTML) | high | CWE-79 / A03 |
 | `korea.js.command-injection` | 가-5 운영체제 명령어 삽입 | critical | CWE-78 / A03 |
 | `korea.js.open-redirect` (js pack: `javascript.security.open-redirect`) | 가-7 신뢰되지 않는 URL 자동접속 | medium | CWE-601 / A01 |
@@ -99,7 +100,8 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 ## Python Rules (Python 시큐어코딩 가이드, 2023년 개정본)
 
 동일 배포처의 **파이썬 시큐어코딩 가이드(2023년 개정본)** 구현단계 보안약점
-항목에 매핑된 규칙입니다.
+항목에 매핑된 규칙입니다. taint 규칙은 JS와 동일한 데이터플로우 엔진을
+사용합니다.
 
 ### 가. 입력데이터 검증 및 표현
 
@@ -108,6 +110,7 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 | `korea.py.sql-injection` | 가-1 SQL 삽입 | critical | CWE-89 / A03 |
 | `korea.py.code-injection` (python pack: `python.security.eval-exec`) | 가-2 코드 삽입 | critical | CWE-95 / A03 |
 | `korea.py.path-traversal` | 가-3 경로 조작 및 자원 삽입 | high | CWE-22 / A01 |
+| `korea.py.xss` | 가-4 크로스사이트 스크립트(mark_safe·HttpResponse taint 추적) | high | CWE-79 / A03 |
 | `korea.py.command-injection` (python pack: `python.security.os-system`, `subprocess-shell`) | 가-5 운영체제 명령어 삽입 | high | CWE-78 / A03 |
 | `korea.py.xxe` | 가-8 부적절한 XML 외부 개체 참조 | high | CWE-611 / A05 |
 | `korea.py.ssrf` (python pack: `python.security.ssrf`) | 가-12 서버사이드 요청 위조 | high | CWE-918 / A10 |
@@ -131,8 +134,10 @@ Hawk 규칙은 독립적인 ID를 사용하며, 아래 표의 항목 코드(가-
 
 ## Limitations
 
-- 가-4 XSS(템플릿), 가-6 파일 업로드, 가-11 CSRF, 나-5 평문 저장 등은 정적
-  탐지가 어려워 미구현입니다.
+- 가-6 파일 업로드, 가-11 CSRF, 나-5 평문 저장 등은 정적 탐지가 어려워 미구현입니다.
+- JS·Python XSS(가-4)는 데이터플로우(taint) 기반으로 탐지합니다(Java도 동일).
+  JS는 아직 범용 데이터플로우가 아니라 소스→변수→sink 추적 수준이며, Python은
+  추가 엔진 확장이 필요합니다.
 - `open()` 비리터럴 경로, `print()` 등은 휴리스틱 패턴으로 오탐 가능성이 있으며,
   info/low 심각도로 완화했습니다.
 

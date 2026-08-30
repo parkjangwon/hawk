@@ -1,0 +1,15 @@
+id = "korea.js.xss"
+name = "Reflected XSS via DOM sink"
+description = "입력데이터 검증 및 표현 - 크로스사이트 스크립트(가-4): 외부 입력이 outerHTML·insertAdjacentHTML·writeln 등 DOM sink로 흐르면 XSS가 발생한다. 코드 흐름(taint) 추적 기반 탐지."
+recommendation = "textContent 사용, 템플릿 자동 이스케이프, 입력 검증으로 대응한다."
+category = "xss"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-79"
+owasp = "A03:2021"
+
+[taint]
+sources = ["req.query", "req.body", "req.params", "location.search", "getParameter", "URLSearchParams"]
+sanitizers = ["escapeHtml", "sanitize", "textContent"]
+sinks = [".outerHTML", "insertAdjacentHTML(", "document.writeln(", ".write("]

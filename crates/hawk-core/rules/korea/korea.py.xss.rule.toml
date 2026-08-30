@@ -1,0 +1,16 @@
+id = "korea.py.xss"
+name = "Reflected XSS via unsafe template/output"
+description = "입력데이터 검증 및 표현 - 크로스사이트 스크립트(가-4): 외부 입력이 mark_safe·HttpResponse 등 이스케이프되지 않은 출력으로 흐르면 XSS가 발생한다. 코드 흐름(taint) 추적 기반 탐지."
+recommendation = "Django 자동 이스케이프 템플릿과 escape()를 사용하고 mark_safe를 지양한다."
+category = "xss"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+framework = "Django"
+cwe = "CWE-79"
+owasp = "A03:2021"
+
+[taint]
+sources = ["request.args", "request.POST", "request.GET", "request.form", "request.values", "getParameter"]
+sanitizers = ["escape", "escapeHtml", "mark_safe"]
+sinks = ["mark_safe(", "HttpResponse(", "format_html_plus(", ".write("]

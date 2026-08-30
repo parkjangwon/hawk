@@ -581,8 +581,12 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                     include_str!("../rules/korea/korea.py.unsafe-deserialization.rule.toml"),
                 ),
                 (
-                    "built-in:rules/korea/korea.py.debug-code.rule.toml",
-                    include_str!("../rules/korea/korea.py.debug-code.rule.toml"),
+                    "built-in:rules/korea/korea.js.xss.rule.toml",
+                    include_str!("../rules/korea/korea.js.xss.rule.toml"),
+                ),
+                (
+                    "built-in:rules/korea/korea.py.xss.rule.toml",
+                    include_str!("../rules/korea/korea.py.xss.rule.toml"),
                 ),
             ],
         ),

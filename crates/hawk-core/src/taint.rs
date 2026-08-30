@@ -8,7 +8,7 @@
 //! the algorithm while the rule file declares the semantics — exactly the
 //! model described in the README.
 
-pub use crate::taint_engine::analyze_java;
+pub use crate::taint_engine::{analyze, analyze_java};
 
 use crate::{
     finding::{Confidence, Finding, Severity, SourceLocation},
@@ -311,5 +311,90 @@ class X {
         // Recursion is guarded: analysis terminates; taint may not propagate
         // through the cyclic call, which is the safe behavior.
         assert!(findings.len() <= 1);
+    }
+
+    #[test]
+    fn javascript_taint_flows_through_variables_and_function_returns() {
+        let source = r#"
+function build(prefix, user) {
+    return prefix + user.q;
+}
+const q = req.query.q;
+el.outerHTML = build("x", { q });
+"#;
+        let parser = TreeSitterParser {
+            language: Language::JavaScript,
+        };
+        let tree = parser.parse(source).expect("js should parse");
+        let config = TaintConfig {
+            sources: vec!["req.query".into()],
+            sanitizers: vec![],
+            sinks: vec![".outerHTML".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::JavaScript);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "JS taint must flow through variables and calls"
+        );
+        assert!(findings[0].sink.contains("outerHTML"));
+    }
+
+    #[test]
+    fn javascript_taint_ignores_clean_assignments() {
+        let source = "const q = req.query.q;\nel.textContent = q;\n";
+        let parser = TreeSitterParser {
+            language: Language::JavaScript,
+        };
+        let tree = parser.parse(source).unwrap();
+        let config = TaintConfig {
+            sources: vec!["req.query".into()],
+            sanitizers: vec![],
+            sinks: vec![".outerHTML".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::JavaScript);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn python_taint_flows_to_mark_safe() {
+        let source = "def view():\n    q = request.args.get('q')\n    return mark_safe(q)\n";
+        let parser = TreeSitterParser {
+            language: Language::Python,
+        };
+        let tree = parser.parse(source).expect("py should parse");
+        let config = TaintConfig {
+            sources: vec!["request.args".into()],
+            sanitizers: vec![],
+            sinks: vec!["mark_safe(".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::Python);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "Python taint must follow assignments to sinks"
+        );
+    }
+
+    #[test]
+    fn python_taint_is_sanitized_by_escape() {
+        let source = "def view():\n    q = request.args.get('q')\n    return escape(q)\n";
+        let parser = TreeSitterParser {
+            language: Language::Python,
+        };
+        let tree = parser.parse(source).unwrap();
+        let config = TaintConfig {
+            sources: vec!["request.args".into()],
+            sanitizers: vec!["escape".into()],
+            sinks: vec!["mark_safe(".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::Python);
+        assert!(findings.is_empty());
     }
 }

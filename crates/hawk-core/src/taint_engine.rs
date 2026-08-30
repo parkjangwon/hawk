@@ -8,37 +8,100 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast::AstNode,
+    language::Language,
     parser::SyntaxTree,
     taint::{TaintConfig, TaintFinding},
 };
 
-/// Runs the engine over a Java syntax tree. Returns taint findings in source
-/// order.
-pub fn analyze_java(tree: &SyntaxTree, source: &str, config: &TaintConfig) -> Vec<TaintFinding> {
+/// Runs the engine over a syntax tree for the given language. Returns taint
+/// findings in source order.
+pub fn analyze(
+    tree: &SyntaxTree,
+    source: &str,
+    config: &TaintConfig,
+    language: Language,
+) -> Vec<TaintFinding> {
     if config.sources.is_empty() || config.sinks.is_empty() {
         return Vec::new();
     }
-    let mut state = State::new(source, config);
+    let mut state = State::new(source, config, language);
     state.collect_methods(tree.root());
     state.walk(tree.root());
+    // Nested sink calls (e.g. an outer router.get(...) whose arrow-function
+    // argument contains an inner insertAdjacentHTML(...)) would both match the
+    // sink text. Keep only the innermost finding for overlapping spans.
+    let findings = state.findings.clone();
+    state.findings.retain(|finding| {
+        !findings.iter().any(|other| {
+            other.start_byte >= finding.start_byte
+                && other.end_byte <= finding.end_byte
+                && (other.start_byte != finding.start_byte || other.end_byte != finding.end_byte)
+        })
+    });
     state.findings
+}
+
+/// Java entry point kept for compatibility with existing callers.
+pub fn analyze_java(tree: &SyntaxTree, source: &str, config: &TaintConfig) -> Vec<TaintFinding> {
+    analyze(tree, source, config, Language::Java)
+}
+
+fn method_like_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::Java => &["method_declaration", "constructor_declaration"],
+        Language::JavaScript | Language::TypeScript => &[
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+        ],
+        Language::Python => &["function_definition"],
+        Language::Go | Language::Unknown => &[],
+    }
+}
+
+fn declaration_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::JavaScript | Language::TypeScript => {
+            &["lexical_declaration", "variable_declaration"]
+        }
+        _ => &["local_variable_declaration"],
+    }
+}
+
+fn assignment_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::Python => &["assignment"],
+        _ => &["assignment_expression"],
+    }
+}
+
+fn call_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::Java => &["method_invocation", "object_creation_expression"],
+        Language::JavaScript | Language::TypeScript => &["call_expression"],
+        Language::Python => &["call"],
+        Language::Go | Language::Unknown => &[],
+    }
 }
 
 struct State<'a> {
     source: &'a str,
     config: &'a TaintConfig,
+    language: Language,
     tainted: HashSet<String>,
     findings: Vec<TaintFinding>,
-    /// Methods declared in the analyzed file, keyed by name. Enables
+    /// Functions declared in the analyzed file, keyed by name. Enables
     /// intra-file interprocedural taint propagation of return values.
     methods: HashMap<String, Vec<AstNode<'a>>>,
 }
 
 impl<'a> State<'a> {
-    fn new(source: &'a str, config: &'a TaintConfig) -> Self {
+    fn new(source: &'a str, config: &'a TaintConfig, language: Language) -> Self {
         Self {
             source,
             config,
+            language,
             tainted: HashSet::new(),
             findings: Vec::new(),
             methods: HashMap::new(),
@@ -49,12 +112,10 @@ impl<'a> State<'a> {
         fn visit<'a>(
             node: AstNode<'a>,
             source: &'a str,
+            kinds: &'static [&'static str],
             methods: &mut HashMap<String, Vec<AstNode<'a>>>,
         ) {
-            if matches!(
-                node.kind(),
-                "method_declaration" | "constructor_declaration" | "function_definition"
-            ) {
+            if kinds.contains(&node.kind()) {
                 if let Some(name) = node
                     .child_by_field_name("name")
                     .and_then(|n| n.text(source))
@@ -64,19 +125,17 @@ impl<'a> State<'a> {
                 return;
             }
             for child in node.children() {
-                visit(child, source, methods);
+                visit(child, source, kinds, methods);
             }
         }
-        visit(root, self.source, &mut self.methods);
+        let kinds = method_like_kinds(self.language);
+        visit(root, self.source, kinds, &mut self.methods);
     }
 
     fn walk(&mut self, node: AstNode<'_>) {
-        // Taint is intraprocedural. Save and restore state around each method
-        // so a tainted variable in one method cannot leak into a sibling method.
-        if matches!(
-            node.kind(),
-            "method_declaration" | "constructor_declaration" | "function_definition"
-        ) {
+        // Taint is intraprocedural. Save and restore state around each function
+        // so a tainted variable in one function cannot leak into a sibling.
+        if method_like_kinds(self.language).contains(&node.kind()) {
             let saved = self.tainted.clone();
             for child in node.children() {
                 self.walk(child);
@@ -86,9 +145,11 @@ impl<'a> State<'a> {
         }
 
         match node.kind() {
-            "local_variable_declaration" => self.handle_local_declaration(node),
-            "assignment_expression" => self.handle_assignment(node),
-            "method_invocation" | "object_creation_expression" => self.handle_sink_expression(node),
+            kind if declaration_kinds(self.language).contains(&kind) => {
+                self.handle_local_declaration(node)
+            }
+            kind if assignment_kinds(self.language).contains(&kind) => self.handle_assignment(node),
+            kind if call_kinds(self.language).contains(&kind) => self.handle_sink_expression(node),
             _ => {}
         }
         for child in node.children() {
@@ -97,7 +158,13 @@ impl<'a> State<'a> {
     }
 
     fn handle_local_declaration(&mut self, node: AstNode<'_>) {
-        let Some(declarator) = node.child_by_field_name("declarator") else {
+        // Java exposes the declarator as a field; JavaScript/Python grammars
+        // place `variable_declarator` nodes as direct children.
+        let declarator = node.child_by_field_name("declarator").or_else(|| {
+            node.children()
+                .find(|child| child.kind() == "variable_declarator")
+        });
+        let Some(declarator) = declarator else {
             return;
         };
         let Some(name) = declarator
@@ -135,6 +202,39 @@ impl<'a> State<'a> {
             return;
         };
         self.apply_assignment(&left, &right);
+
+        // Sink assignments (e.g. `el.innerHTML = userInput`, `document.body.innerHTML =
+        // tainted`) are DOM XSS sinks even though they are not calls.
+        if let Some(text) = node.text(self.source).map(String::from) {
+            if self.is_sink(&text) && self.expr_is_tainted(&right, &mut Vec::new()) {
+                self.emit_finding(node, text);
+            }
+        }
+    }
+
+    fn emit_finding(&mut self, node: AstNode<'_>, text: String) {
+        let pos = node.start_position();
+        let start = node.start_byte();
+        let mut tainted = self
+            .tainted
+            .iter()
+            .filter(|t| contains_identifier(&text, t))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if tainted.is_empty() {
+            // Taint reached the sink via an expression (e.g. a function
+            // return value) rather than a named local variable.
+            tainted = "tainted expression".to_string();
+        }
+        self.findings.push(TaintFinding {
+            start_byte: start,
+            end_byte: node.end_byte(),
+            start_line: pos.row + 1,
+            start_column: pos.column + 1,
+            tainted,
+            sink: text,
+        });
     }
 
     /// Taints `target` when `value` carries source data (a source call, a
@@ -213,7 +313,21 @@ impl<'a> State<'a> {
             .map(|params| {
                 params
                     .children()
-                    .filter(|child| child.kind() == "formal_parameter")
+                    .filter(|child| {
+                        matches!(
+                            child.kind(),
+                            "formal_parameter"
+                                | "identifier"
+                                | "typed_parameter"
+                                | "typed_default_parameter"
+                                | "default_parameter"
+                                | "required_parameter"
+                                | "optional_parameter"
+                                | "pattern"
+                                | "list_splat_pattern"
+                                | "dictionary_splat_pattern"
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -242,10 +356,7 @@ impl<'a> State<'a> {
     }
 
     fn walk_for_returns(&mut self, node: AstNode<'_>, chain: &mut Vec<String>, result: &mut bool) {
-        if matches!(
-            node.kind(),
-            "method_declaration" | "constructor_declaration" | "function_definition"
-        ) {
+        if method_like_kinds(self.language).contains(&node.kind()) {
             return;
         }
         if node.kind() == "return_statement" {
@@ -285,28 +396,7 @@ impl<'a> State<'a> {
         };
 
         if self.is_sink(&text) && self.expr_is_tainted(&text, &mut Vec::new()) {
-            let pos = node.start_position();
-            let start = node.start_byte();
-            let mut tainted = self
-                .tainted
-                .iter()
-                .filter(|t| contains_identifier(&text, t))
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            if tainted.is_empty() {
-                // Taint reached the sink via an expression (e.g. a method
-                // return value) rather than a named local variable.
-                tainted = "tainted expression".to_string();
-            }
-            self.findings.push(TaintFinding {
-                start_byte: start,
-                end_byte: node.end_byte(),
-                start_line: pos.row + 1,
-                start_column: pos.column + 1,
-                tainted,
-                sink: text,
-            });
+            self.emit_finding(node, text);
         }
     }
 
