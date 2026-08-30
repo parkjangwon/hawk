@@ -210,7 +210,7 @@ impl<'a> State<'a> {
                 return true;
             }
         }
-        if chain.iter().any(|c| *c == name) {
+        if chain.contains(&name) {
             return false;
         }
         let candidates: Vec<AstNode<'a>> = self.methods.get(&name).cloned().unwrap_or_default();
