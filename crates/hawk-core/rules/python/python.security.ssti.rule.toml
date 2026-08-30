@@ -1,0 +1,14 @@
+id = "python.security.ssti"
+name = "Server-side template injection"
+description = "render_template_string with user input can enable server-side template injection (SSTI), often leading to remote code execution."
+recommendation = "Avoid render_template_string with untrusted input; use templates with autoescaping and validate inputs."
+category = "ssti"
+severity = "critical"
+confidence = "medium"
+languages = ["python"]
+framework = "Flask"
+cwe = "CWE-1336"
+owasp = "A03:2021"
+
+[pattern]
+regex = "render_template_string\\s*\\([^)]*(request\\.|get\\(|\\{\\{)"

@@ -1,0 +1,13 @@
+id = "python.security.eval-exec"
+name = "Dynamic code execution"
+description = "eval()/exec() compile and run strings as code; user-controlled input reaching them enables arbitrary code execution."
+recommendation = "Avoid eval/exec entirely; use safe parsers and data-driven logic."
+category = "code-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-95"
+owasp = "A03:2021"
+
+[pattern]
+regex = "\\b(eval|exec)\\s*\\([^)]*(request\\.|input\\(|get\\(|\\{\\{)"

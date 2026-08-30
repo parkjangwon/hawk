@@ -1,0 +1,13 @@
+id = "javascript.security.open-redirect"
+name = "Open redirect via dynamic navigation"
+description = "Assigning user-controlled values to window.location / location.href enables open redirects used in phishing."
+recommendation = "Validate the target against an allowlist of hosts/schemes; avoid reflecting raw input into navigation."
+category = "open-redirect"
+severity = "medium"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-601"
+owasp = "A01:2021"
+
+[pattern]
+regex = "(window\\.)?location\\.(href|assign|replace)\\s*=\\s*[^\"']|location\\.(href|assign|replace)\\s*\\([^)]*(location|document\\.|request|\\+)"

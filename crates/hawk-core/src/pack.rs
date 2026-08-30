@@ -732,6 +732,14 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                     "built-in:js/javascript.security.child-process.rule.toml",
                     include_str!("../rules/js/javascript.security.child-process.rule.toml"),
                 ),
+                (
+                    "built-in:js/javascript.security.document-write.rule.toml",
+                    include_str!("../rules/js/javascript.security.document-write.rule.toml"),
+                ),
+                (
+                    "built-in:js/javascript.security.open-redirect.rule.toml",
+                    include_str!("../rules/js/javascript.security.open-redirect.rule.toml"),
+                ),
             ],
         ),
         (
@@ -748,6 +756,18 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
                 (
                     "built-in:python/python.security.subprocess-shell.rule.toml",
                     include_str!("../rules/python/python.security.subprocess-shell.rule.toml"),
+                ),
+                (
+                    "built-in:python/python.security.ssti.rule.toml",
+                    include_str!("../rules/python/python.security.ssti.rule.toml"),
+                ),
+                (
+                    "built-in:python/python.security.eval-exec.rule.toml",
+                    include_str!("../rules/python/python.security.eval-exec.rule.toml"),
+                ),
+                (
+                    "built-in:python/python.security.ssrf.rule.toml",
+                    include_str!("../rules/python/python.security.ssrf.rule.toml"),
                 ),
             ],
         ),

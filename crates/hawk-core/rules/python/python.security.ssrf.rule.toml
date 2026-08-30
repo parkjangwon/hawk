@@ -1,0 +1,13 @@
+id = "python.security.ssrf"
+name = "Server-side request forgery"
+description = "HTTP requests to URLs built from request data can reach internal networks and cloud metadata endpoints (SSRF)."
+recommendation = "Allowlist target hosts/schemes; block internal and metadata address ranges; never forward raw user URLs."
+category = "ssrf"
+severity = "high"
+confidence = "medium"
+languages = ["python"]
+cwe = "CWE-918"
+owasp = "A10:2021"
+
+[pattern]
+regex = "(urllib\\.request\\.(urlopen|Request)|requests\\.(get|post|put|delete|request)|httpx\\.(get|post|request)|aiohttp\\.ClientSession)\\s*\\([^)]*(request\\.|get\\()"

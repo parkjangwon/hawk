@@ -1,0 +1,13 @@
+id = "javascript.security.document-write"
+name = "document.write with dynamic content"
+description = "Writing dynamic content into the document via document.write can inject HTML/script when inputs are user-controlled."
+recommendation = "Build the DOM with createElement/textContent and avoid document.write."
+category = "xss"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-79"
+owasp = "A03:2021"
+
+[pattern]
+regex = "document\\.write\\s*\\([^)]*(location|document\\.|\\+)"
