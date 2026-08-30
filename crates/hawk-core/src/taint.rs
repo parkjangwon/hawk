@@ -8,6 +8,7 @@
 //! the algorithm while the rule file declares the semantics — exactly the
 //! model described in the README.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::{
@@ -46,6 +47,7 @@ pub fn analyze_java(tree: &SyntaxTree, source: &str, config: &TaintConfig) -> Ve
         return Vec::new();
     }
     let mut state = State::new(source, config);
+    state.collect_methods(tree.root());
     state.walk(tree.root());
     state.findings
 }
@@ -55,6 +57,9 @@ struct State<'a> {
     config: &'a TaintConfig,
     tainted: HashSet<String>,
     findings: Vec<TaintFinding>,
+    /// Methods declared in the analyzed file, keyed by name. Enables
+    /// intra-file interprocedural taint propagation of return values.
+    methods: HashMap<String, Vec<AstNode<'a>>>,
 }
 
 impl<'a> State<'a> {
@@ -64,7 +69,33 @@ impl<'a> State<'a> {
             config,
             tainted: HashSet::new(),
             findings: Vec::new(),
+            methods: HashMap::new(),
         }
+    }
+
+    fn collect_methods(&mut self, root: AstNode<'a>) {
+        fn visit<'a>(
+            node: AstNode<'a>,
+            source: &'a str,
+            methods: &mut HashMap<String, Vec<AstNode<'a>>>,
+        ) {
+            if matches!(
+                node.kind(),
+                "method_declaration" | "constructor_declaration" | "function_definition"
+            ) {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.text(source))
+                {
+                    methods.entry(name.to_string()).or_default().push(node);
+                }
+                return;
+            }
+            for child in node.children() {
+                visit(child, source, methods);
+            }
+        }
+        visit(root, self.source, &mut self.methods);
     }
 
     fn walk(&mut self, node: AstNode<'_>) {
@@ -135,12 +166,13 @@ impl<'a> State<'a> {
     }
 
     /// Taints `target` when `value` carries source data (a source call, a
-    /// tainted variable, or both); otherwise clears it. If the value is a
-    /// sanitizer call, the target is explicitly marked clean.
+    /// tainted variable, a tainted method return, or a combination); otherwise
+    /// clears it. If the value is a sanitizer call, the target is explicitly
+    /// marked clean.
     fn apply_assignment(&mut self, target: &str, value: &str) {
         if self.is_sanitizer_call(value) {
             self.tainted.remove(target);
-        } else if self.is_tainted_value(value) {
+        } else if self.expr_is_tainted(value, &mut Vec::new()) {
             self.tainted.insert(target.to_string());
         } else {
             self.tainted.remove(target);
@@ -154,12 +186,125 @@ impl<'a> State<'a> {
             .any(|s| value.contains(s.as_str()))
     }
 
-    fn is_tainted_value(&self, value: &str) -> bool {
-        self.config
+    /// Whether an expression text carries taint: it references a tainted
+    /// variable, contains a source call, or is/contains a call to a same-file
+    /// method that returns tainted data (intra-file interprocedural taint).
+    fn expr_is_tainted(&mut self, text: &str, chain: &mut Vec<String>) -> bool {
+        if self
+            .config
             .sources
             .iter()
-            .any(|pattern| value.contains(pattern))
-            || is_tainted_text(value, &self.tainted)
+            .any(|pattern| text.contains(pattern))
+        {
+            return true;
+        }
+        if is_tainted_text(text, &self.tainted) {
+            return true;
+        }
+        let Some((name, args)) = parse_call(text) else {
+            return false;
+        };
+        // A tainted argument propagates even when the callee is unknown.
+        for arg in &args {
+            if self.expr_is_tainted(arg, chain) {
+                return true;
+            }
+        }
+        if chain.iter().any(|c| *c == name) {
+            return false;
+        }
+        let candidates: Vec<AstNode<'a>> = self.methods.get(&name).cloned().unwrap_or_default();
+        if candidates.is_empty() {
+            return false;
+        }
+        chain.push(name.clone());
+        let tainted = candidates
+            .iter()
+            .any(|method| self.callee_returns_tainted(*method, &args, chain));
+        chain.pop();
+        tainted
+    }
+
+    /// Analyzes a same-file method body with the caller's argument taint bound
+    /// to its parameters, and reports whether any `return` expression is
+    /// tainted. Sink findings inside the callee are deliberately not emitted
+    /// here (the caller's sink site is the finding location).
+    fn callee_returns_tainted(
+        &mut self,
+        method: AstNode<'a>,
+        args: &[String],
+        chain: &mut Vec<String>,
+    ) -> bool {
+        let saved = std::mem::take(&mut self.tainted);
+        let params: Vec<AstNode<'a>> = method
+            .child_by_field_name("parameters")
+            .map(|params| {
+                params
+                    .children()
+                    .filter(|child| child.kind() == "formal_parameter")
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (index, param) in params.iter().enumerate() {
+            let Some(arg) = args.get(index) else {
+                break;
+            };
+            if self.expr_is_tainted(arg, chain) {
+                if let Some(name) = param
+                    .child_by_field_name("name")
+                    .and_then(|n| n.text(self.source))
+                {
+                    self.tainted.insert(name.to_string());
+                }
+            }
+        }
+        let mut result = false;
+        for child in method.children() {
+            self.walk_for_returns(child, chain, &mut result);
+            if result {
+                break;
+            }
+        }
+        self.tainted = saved;
+        result
+    }
+
+    fn walk_for_returns(&mut self, node: AstNode<'_>, chain: &mut Vec<String>, result: &mut bool) {
+        if matches!(
+            node.kind(),
+            "method_declaration" | "constructor_declaration" | "function_definition"
+        ) {
+            return;
+        }
+        if node.kind() == "return_statement" {
+            let value = node
+                .children()
+                .find(|child| {
+                    let kind = child.kind();
+                    kind != "return" && kind != ";"
+                })
+                .and_then(|child| child.text(self.source));
+            if let Some(value) = value {
+                if self.expr_is_tainted(value, chain) {
+                    *result = true;
+                }
+            }
+            return;
+        }
+        match node.kind() {
+            "local_variable_declaration" => self.handle_local_declaration(node),
+            "assignment_expression" => self.handle_assignment(node),
+            _ => {}
+        }
+        if *result {
+            return;
+        }
+        for child in node.children() {
+            self.walk_for_returns(child, chain, result);
+            if *result {
+                break;
+            }
+        }
     }
 
     fn handle_method_invocation(&mut self, node: AstNode<'_>) {
@@ -167,8 +312,7 @@ impl<'a> State<'a> {
             return;
         };
 
-        if self.is_sink(&text) && (is_tainted_text(&text, &self.tainted) || self.has_source(&text))
-        {
+        if self.is_sink(&text) && self.expr_is_tainted(&text, &mut Vec::new()) {
             let pos = node.start_position();
             let start = node.start_byte();
             let tainted = self
@@ -195,15 +339,57 @@ impl<'a> State<'a> {
             .iter()
             .any(|sink| text.contains(sink.as_str()))
     }
+}
 
-    /// Whether the sink expression inlines a source call (e.g. an argument that
-    /// is itself `req.getParameter(...)`).
-    fn has_source(&self, text: &str) -> bool {
-        self.config
-            .sources
-            .iter()
-            .any(|source| text.contains(source.as_str()))
+/// Parses `name(args...)` from an expression text: returns the final callee
+/// identifier (after any `receiver.` prefix) and the top-level argument texts.
+fn parse_call(text: &str) -> Option<(String, Vec<String>)> {
+    let open = text.find('(')?;
+    let before = &text[..open];
+    let name_start = before
+        .rfind(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '_' || character == '.')
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let name = before[name_start..]
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return None;
     }
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    for character in text[open + 1..].chars() {
+        match character {
+            '(' => {
+                depth += 1;
+                current.push(character);
+            }
+            ')' => {
+                if depth == 0 {
+                    if !current.trim().is_empty() {
+                        args.push(current.trim().to_string());
+                    }
+                    return Some((name, args));
+                }
+                depth -= 1;
+                current.push(character);
+            }
+            ',' if depth == 0 => {
+                if !current.trim().is_empty() {
+                    args.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+    None
 }
 
 fn line_text(source: &str, byte: usize) -> String {
@@ -419,5 +605,109 @@ class X {
         // assignment uses it.
         let findings = analyze_java(&tree, source, &config);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn interprocedural_return_value_taint_is_tracked() {
+        let source = r#"
+class X {
+    String buildQuery(javax.servlet.http.HttpServletRequest req) {
+        return "SELECT * FROM u WHERE id=" + req.getParameter("id");
+    }
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        st.executeQuery(buildQuery(req));
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(findings.len(), 1, "method return value must carry taint");
+        assert_eq!(findings[0].sink, "st.executeQuery(buildQuery(req))");
+    }
+
+    #[test]
+    fn interprocedural_taint_flows_through_assignment() {
+        let source = r#"
+class X {
+    String wrap(String input) {
+        return "prefix " + input;
+    }
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String id = req.getParameter("id");
+        String sql = wrap(id);
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(findings.len(), 1, "assigned method result must carry taint");
+        assert!(findings[0].tainted.contains("sql"));
+    }
+
+    #[test]
+    fn tainted_arguments_are_bound_to_callee_parameters() {
+        let source = r#"
+class X {
+    String concat(String a, String b) {
+        return a + b;
+    }
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String id = req.getParameter("id");
+        String sql = concat("SELECT * FROM u WHERE id=", id);
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(findings.len(), 1, "parameter binding must propagate taint");
+    }
+
+    #[test]
+    fn interprocedural_taint_does_not_leak_across_siblings() {
+        let source = r#"
+class X {
+    String buildQuery(javax.servlet.http.HttpServletRequest req) {
+        return req.getParameter("id");
+    }
+    void clean() {
+        String sql = "SELECT 1";
+    }
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String sql = "SELECT 1";
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert!(findings.is_empty(), "unrelated method must not be tainted");
+    }
+
+    #[test]
+    fn recursive_calls_do_not_loop_forever() {
+        let source = r#"
+class X {
+    String identity(String x) {
+        return identity(x);
+    }
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String id = req.getParameter("id");
+        String sql = identity(id);
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        // Recursion is guarded: analysis terminates; taint may not propagate
+        // through the cyclic call, which is the safe behavior.
+        assert!(findings.len() <= 1);
     }
 }
