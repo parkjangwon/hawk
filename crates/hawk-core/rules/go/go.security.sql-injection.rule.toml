@@ -1,0 +1,15 @@
+id = "go.security.sql-injection"
+name = "SQL injection via dynamic query"
+description = "외부 입력(FormValue, URL 쿼리)을 검증 없이 database/sql 쿼리에 연결하면 SQL 삽입이 가능하다."
+recommendation = "db.Query/QueryRow/Exec에 파라미터 placeholder(?)를 사용하고 입력을 바인딩한다."
+category = "sql-injection"
+severity = "critical"
+confidence = "medium"
+languages = ["go"]
+cwe = "CWE-89"
+owasp = "A03:2021"
+
+[taint]
+sources = ["FormValue", "URL.Query().Get", "URL.Query()", "Form.Get"]
+sanitizers = ["sanitizeSql"]
+sinks = ["db.Query(", "db.QueryRow(", "db.Exec(", "conn.Query(", "conn.Exec(", "tx.Exec(", "stmt.Exec(", ".QueryContext(", ".ExecContext("]

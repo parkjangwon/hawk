@@ -10,6 +10,6 @@ cwe = "CWE-79"
 owasp = "A03:2021"
 
 [taint]
-sources = ["req.query", "req.body", "req.params", "location.search", "getParameter", "URLSearchParams"]
+sources = ["req.query", "req.body", "req.params", "req.cookies", "req.headers", "req.files", "req.signedCookies", "location.search", "getParameter", "URLSearchParams"]
 sanitizers = ["escapeHtml", "sanitize", "textContent"]
 sinks = [".outerHTML", "insertAdjacentHTML(", "document.writeln(", ".write("]

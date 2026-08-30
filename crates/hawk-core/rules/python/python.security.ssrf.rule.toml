@@ -9,5 +9,7 @@ languages = ["python"]
 cwe = "CWE-918"
 owasp = "A10:2021"
 
-[pattern]
-regex = "(urllib\\.request\\.(urlopen|Request)|requests\\.(get|post|put|delete|request)|httpx\\.(get|post|request)|aiohttp\\.ClientSession)\\s*\\([^)]*(request\\.|get\\()"
+[taint]
+sources = ["request.args", "request.POST", "request.GET", "request.form", "request.values", "request.json", "request.cookies", "request.files", "request.data", "request.headers", "request.COOKIES", "request.META", "getParameter"]
+sanitizers = ["urlparse", "isSafeUrl", "isSafeHost"]
+sinks = ["urllib.request.urlopen(", "urllib.request.Request(", "requests.get(", "requests.post(", "requests.put(", "requests.delete(", "requests.request(", "httpx.get(", "httpx.post(", "httpx.request(", "aiohttp.ClientSession"]

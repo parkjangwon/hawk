@@ -56,7 +56,8 @@ fn method_like_kinds(language: Language) -> &'static [&'static str] {
             "method_definition",
         ],
         Language::Python => &["function_definition"],
-        Language::Go | Language::Unknown => &[],
+        Language::Go => &["function_declaration", "method_declaration"],
+        Language::Unknown => &[],
     }
 }
 
@@ -65,6 +66,7 @@ fn declaration_kinds(language: Language) -> &'static [&'static str] {
         Language::JavaScript | Language::TypeScript => {
             &["lexical_declaration", "variable_declaration"]
         }
+        Language::Go => &["var_spec"],
         _ => &["local_variable_declaration"],
     }
 }
@@ -72,6 +74,7 @@ fn declaration_kinds(language: Language) -> &'static [&'static str] {
 fn assignment_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Python => &["assignment"],
+        Language::Go => &["assignment_statement", "short_var_declaration"],
         _ => &["assignment_expression"],
     }
 }
@@ -101,7 +104,8 @@ fn call_kinds(language: Language) -> &'static [&'static str] {
         Language::Java => &["method_invocation", "object_creation_expression"],
         Language::JavaScript | Language::TypeScript => &["call_expression"],
         Language::Python => &["call"],
-        Language::Go | Language::Unknown => &[],
+        Language::Go => &["call_expression"],
+        Language::Unknown => &[],
     }
 }
 
@@ -261,10 +265,15 @@ impl<'a> State<'a> {
     fn handle_local_declaration(&mut self, node: AstNode<'_>) {
         // Java exposes the declarator as a field; JavaScript/Python grammars
         // place `variable_declarator` nodes as direct children.
-        let declarator = node.child_by_field_name("declarator").or_else(|| {
-            node.children()
-                .find(|child| child.kind() == "variable_declarator")
-        });
+        // Go `var x = ...` uses var_spec with direct name/value fields.
+        let declarator = if node.kind() == "var_spec" {
+            Some(node)
+        } else {
+            node.child_by_field_name("declarator").or_else(|| {
+                node.children()
+                    .find(|child| child.kind() == "variable_declarator")
+            })
+        };
         let Some(declarator) = declarator else {
             return;
         };
@@ -430,6 +439,7 @@ impl<'a> State<'a> {
                                 | "pattern"
                                 | "list_splat_pattern"
                                 | "dictionary_splat_pattern"
+                                | "parameter_declaration"
                         )
                     })
                     .collect()
@@ -480,8 +490,10 @@ impl<'a> State<'a> {
             return;
         }
         match node.kind() {
-            "local_variable_declaration" => self.handle_local_declaration(node),
-            "assignment_expression" => self.handle_assignment(node),
+            kind if declaration_kinds(self.language).contains(&kind) => {
+                self.handle_local_declaration(node)
+            }
+            kind if assignment_kinds(self.language).contains(&kind) => self.handle_assignment(node),
             _ => {}
         }
         if *result {
@@ -574,9 +586,67 @@ pub(crate) fn line_text(source: &str, byte: usize) -> String {
 }
 
 pub(crate) fn is_tainted_text(text: &str, tainted_vars: &HashSet<String>) -> bool {
+    if tainted_vars.is_empty() {
+        return false;
+    }
+    let stripped = strip_string_literals(text);
     tainted_vars
         .iter()
-        .any(|var| contains_identifier(text, var))
+        .any(|var| contains_identifier(&stripped, var))
+}
+
+/// Replaces string literal contents with spaces so that words inside string
+/// data are never mistaken for variable references. Template-literal
+/// `${expr}` interpolations are preserved: they reference real variables.
+fn strip_string_literals(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' | '\'' => {
+                result.push(' ');
+                while let Some(next) = chars.next() {
+                    if next == '\\' {
+                        chars.next();
+                    } else if next == character {
+                        break;
+                    }
+                }
+                result.push(' ');
+            }
+            '`' => {
+                result.push(' ');
+                let mut depth = 0i32;
+                let mut interpolating = false;
+                while let Some(next) = chars.next() {
+                    if interpolating {
+                        result.push(next);
+                        if next == '{' {
+                            depth += 1;
+                        } else if next == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                interpolating = false;
+                            }
+                        }
+                        continue;
+                    }
+                    if next == '\\' {
+                        chars.next();
+                    } else if next == '$' && chars.clone().next() == Some('{') {
+                        chars.next(); // consume the '{'
+                        interpolating = true;
+                        depth = 1;
+                    } else if next == '`' {
+                        break;
+                    }
+                }
+                result.push(' ');
+            }
+            _ => result.push(character),
+        }
+    }
+    result
 }
 
 fn contains_identifier(text: &str, identifier: &str) -> bool {

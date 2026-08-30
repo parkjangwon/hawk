@@ -490,4 +490,103 @@ class X {
         let findings = analyze(&tree, source, &config, Language::Python);
         assert!(findings.is_empty());
     }
+
+    #[test]
+    fn typescript_taint_flows_through_typed_variables() {
+        let source = r#"
+import { Request, Response } from "express";
+
+function render(req: Request): string {
+    const name: string = req.params.name;
+    return "<div>" + name + "</div>";
+}
+
+export function handler(req: Request, res: Response) {
+    res.send(render(req));
+}
+"#;
+        let parser = TreeSitterParser {
+            language: Language::TypeScript,
+        };
+        let tree = parser.parse(source).expect("ts should parse");
+        let config = TaintConfig {
+            sources: vec!["req.params".into()],
+            sanitizers: vec![],
+            sinks: vec!["res.send(".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::TypeScript);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "TS taint must flow through typed params and returns"
+        );
+        assert!(findings[0].sink.contains("res.send("));
+    }
+
+    #[test]
+    fn typescript_taint_is_cleared_by_sanitizer() {
+        let source = r#"
+import { Request, Response } from "express";
+import { escape } from "html-escape";
+
+export function handler(req: Request, res: Response) {
+    const q: string = req.query.q as string;
+    const safe = escape(q);
+    res.send(safe);
+}
+"#;
+        let parser = TreeSitterParser {
+            language: Language::TypeScript,
+        };
+        let tree = parser.parse(source).expect("ts should parse");
+        let config = TaintConfig {
+            sources: vec!["req.query".into()],
+            sanitizers: vec!["escape(".into()],
+            sinks: vec!["res.send(".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::TypeScript);
+        assert!(findings.is_empty(), "sanitized TS flow must not fire");
+    }
+
+    #[test]
+    fn words_inside_string_literals_are_not_identifier_matches() {
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String name = req.getParameter("name");
+        st.executeQuery("SELECT name FROM users WHERE id = 1");
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert!(
+            findings.is_empty(),
+            "the word `name` inside the SQL literal must not match the tainted variable"
+        );
+    }
+
+    #[test]
+    fn template_literal_interpolation_still_carries_taint() {
+        let source = r#"
+const q = req.query.q;
+el.outerHTML = `<div>${q}</div>`;
+"#;
+        let parser = TreeSitterParser {
+            language: Language::JavaScript,
+        };
+        let tree = parser.parse(source).expect("js should parse");
+        let config = TaintConfig {
+            sources: vec!["req.query".into()],
+            sanitizers: vec![],
+            sinks: vec![".outerHTML".into()],
+        };
+
+        let findings = analyze(&tree, source, &config, Language::JavaScript);
+        assert_eq!(findings.len(), 1, "template interpolation carries taint");
+    }
 }

@@ -390,10 +390,20 @@ pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError>
         ),
         (
             include_str!("../rules/go/pack.toml"),
-            &[(
-                "built-in:go/go.security.exec-command.rule.toml",
-                include_str!("../rules/go/go.security.exec-command.rule.toml"),
-            )],
+            &[
+                (
+                    "built-in:go/go.security.exec-command.rule.toml",
+                    include_str!("../rules/go/go.security.exec-command.rule.toml"),
+                ),
+                (
+                    "built-in:go/go.security.sql-injection.rule.toml",
+                    include_str!("../rules/go/go.security.sql-injection.rule.toml"),
+                ),
+                (
+                    "built-in:go/go.security.ssrf.rule.toml",
+                    include_str!("../rules/go/go.security.ssrf.rule.toml"),
+                ),
+            ],
         ),
         (
             include_str!("../rules/korea/pack.toml"),

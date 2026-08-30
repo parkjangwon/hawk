@@ -11,6 +11,6 @@ cwe = "CWE-79"
 owasp = "A03:2021"
 
 [taint]
-sources = ["request.args", "request.POST", "request.GET", "request.form", "request.values", "getParameter"]
-sanitizers = ["escape", "escapeHtml", "mark_safe"]
+sources = ["request.args", "request.POST", "request.GET", "request.form", "request.values", "request.json", "request.cookies", "request.files", "request.data", "request.headers", "request.COOKIES", "request.META", "getParameter"]
+sanitizers = ["escape", "escapeHtml"]
 sinks = ["mark_safe(", "HttpResponse(", "format_html_plus(", ".write("]
