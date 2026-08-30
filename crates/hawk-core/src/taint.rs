@@ -315,13 +315,18 @@ impl<'a> State<'a> {
         if self.is_sink(&text) && self.expr_is_tainted(&text, &mut Vec::new()) {
             let pos = node.start_position();
             let start = node.start_byte();
-            let tainted = self
+            let mut tainted = self
                 .tainted
                 .iter()
                 .filter(|t| contains_identifier(&text, t))
                 .map(String::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
+            if tainted.is_empty() {
+                // Taint reached the sink via an expression (e.g. a method
+                // return value) rather than a named local variable.
+                tainted = "tainted expression".to_string();
+            }
             self.findings.push(TaintFinding {
                 start_byte: start,
                 end_byte: node.end_byte(),
