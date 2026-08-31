@@ -404,23 +404,6 @@ impl CodeGraph {
             .unwrap_or_default()
     }
 
-    /// (file index, declaration byte) of every symbol whose simple or
-    /// qualified name matches `name` (used for cross-file callee lookup).
-    pub fn symbol_locations(&self, name: &str) -> Vec<(usize, usize)> {
-        if let Some(locations) = self.name_locations.get(name) {
-            return locations.clone();
-        }
-        // Dotted names can only match a qualified name; fall back to a scan.
-        let suffix = format!(".{}", name);
-        self.symbols
-            .iter()
-            .filter(|symbol| {
-                symbol.qualified_name == name || symbol.qualified_name.ends_with(&suffix)
-            })
-            .map(|symbol| (symbol.file_index, symbol.start_byte))
-            .collect()
-    }
-
     /// The prebuilt symbol name -> locations table, shared by taint analyses.
     pub fn name_locations(&self) -> &HashMap<String, Vec<(usize, usize)>> {
         &self.name_locations
@@ -433,198 +416,6 @@ impl CodeGraph {
             None => self.files.get(file_index),
             Some(lazy) => lazy.get(file_index),
         }
-    }
-
-    /// Structural summary: fan-in/fan-out extremes and the longest resolved
-    /// call chain (acyclic, memoized DFS).
-    pub fn metrics(&self) -> GraphMetrics {
-        let mut fan_in = vec![0usize; self.symbols.len()];
-        let mut fan_out = vec![0usize; self.symbols.len()];
-        for edge in &self.edges {
-            fan_out[edge.caller] += 1;
-            if let Some(callee) = edge.callee {
-                fan_in[callee] += 1;
-            }
-        }
-        let max_fan_in = (0..self.symbols.len())
-            .filter(|index| fan_in[*index] > 0)
-            .max_by_key(|index| fan_in[*index])
-            .map(|index| (index, fan_in[index]));
-        let max_fan_out = (0..self.symbols.len())
-            .filter(|index| fan_out[*index] > 0)
-            .max_by_key(|index| fan_out[*index])
-            .map(|index| (index, fan_out[index]));
-        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); self.symbols.len()];
-        let mut seen_edges: HashSet<(usize, usize)> = HashSet::new();
-        for edge in &self.edges {
-            if let Some(callee) = edge.callee {
-                if seen_edges.insert((edge.caller, callee)) {
-                    adjacency[edge.caller].push(callee);
-                }
-            }
-        }
-        let mut memo: Vec<Option<usize>> = vec![None; self.symbols.len()];
-        let mut longest = 0usize;
-        for start in 0..self.symbols.len() {
-            longest = longest.max(longest_chain(start, &adjacency, &mut memo));
-        }
-        GraphMetrics {
-            roots: self.unused().len(),
-            leaves: (0..self.symbols.len())
-                .filter(|index| fan_out[*index] == 0)
-                .count(),
-            max_fan_in,
-            max_fan_out,
-            longest_chain: longest,
-        }
-    }
-
-    /// Symbols with no incoming call edges within the scanned code. Includes
-    /// genuine entry points (main, handlers), so the list is advisory.
-    pub fn unused(&self) -> Vec<&GraphSymbol> {
-        let called: std::collections::HashSet<usize> =
-            self.edges.iter().filter_map(|edge| edge.callee).collect();
-        self.symbols
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| !called.contains(index))
-            .map(|(_, symbol)| symbol)
-            .collect()
-    }
-
-    /// Human-readable architecture listing.
-    pub fn to_text(&self) -> String {
-        let mut out = String::new();
-        out.push_str(&format!(
-            "Architecture graph: {} file(s), {} symbols, {} call edge(s)\n\n",
-            self.files.len(),
-            self.symbols.len(),
-            self.edges.len()
-        ));
-        let mut by_file: Vec<&PathBuf> = self.files.iter().map(|file| &file.path).collect();
-        by_file.sort();
-        for path in by_file {
-            out.push_str(&format!("{}\n", path.display()));
-            for (index, symbol) in self
-                .symbols
-                .iter()
-                .enumerate()
-                .filter(|(_, symbol)| symbol.file == *path)
-            {
-                out.push_str(&format!(
-                    "  {} {}() :{}\n",
-                    symbol.kind_label(),
-                    symbol.qualified_name,
-                    symbol.line
-                ));
-                for edge in self.edges.iter().filter(|edge| edge.caller == index) {
-                    out.push_str(&format!(
-                        "    -> {} {}\n",
-                        edge.callee_text,
-                        match edge.callee {
-                            Some(index) => format!(
-                                "({}:{})",
-                                self.symbols[index].file.display(),
-                                self.symbols[index].line
-                            ),
-                            None => "(unresolved: external or dynamic)".into(),
-                        }
-                    ));
-                }
-            }
-        }
-        let unused = self.unused();
-        if !unused.is_empty() {
-            out.push_str(&format!(
-                "\nNo callers within scanned code ({}):\n",
-                unused.len()
-            ));
-            for symbol in unused {
-                out.push_str(&format!(
-                    "  {}:{} {}\n",
-                    symbol.file.display(),
-                    symbol.line,
-                    symbol.qualified_name
-                ));
-            }
-        }
-        let metrics = self.metrics();
-        out.push_str(&format!(
-            "\nSummary: {} root(s) without callers, {} leaf/leaves without calls, longest resolved chain {} hop(s)\n",
-            metrics.roots, metrics.leaves, metrics.longest_chain
-        ));
-        if let Some((index, count)) = metrics.max_fan_in {
-            out.push_str(&format!(
-                "  most called: {} ({} caller(s))\n",
-                self.symbols[index].qualified_name, count
-            ));
-        }
-        if let Some((index, count)) = metrics.max_fan_out {
-            out.push_str(&format!(
-                "  most calls: {} ({} call(s))\n",
-                self.symbols[index].qualified_name, count
-            ));
-        }
-        out
-    }
-
-    /// Mermaid flowchart source for rendering/visualization.
-    pub fn to_mermaid(&self) -> String {
-        let mut out = String::from("graph TD\n");
-        for (index, symbol) in self.symbols.iter().enumerate() {
-            let label = format!(
-                "{}()<br/><small>{}</small>",
-                symbol.qualified_name,
-                symbol
-                    .file
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            );
-            out.push_str(&format!("  n{index}[\"{}\"]\n", mermaid_label(&label)));
-        }
-        let mut external_id = 0usize;
-        for edge in &self.edges {
-            if let Some(callee) = edge.callee {
-                out.push_str(&format!("  n{} --> n{}\n", edge.caller, callee));
-            } else {
-                external_id += 1;
-                out.push_str(&format!(
-                    "  n{} --> n_ext{external_id}[\"external: {}\"]\n",
-                    edge.caller,
-                    mermaid_label(&edge.callee_text)
-                ));
-            }
-        }
-        out
-    }
-
-    /// JSON serialization of the graph (paths, symbols, edges, unused list).
-    pub fn to_json(&self) -> String {
-        let file_paths: Vec<String> = self
-            .files
-            .iter()
-            .map(|file| file.path.to_string_lossy().to_string())
-            .collect();
-        let unused: Vec<String> = self
-            .unused()
-            .iter()
-            .map(|symbol| {
-                format!(
-                    "{}:{} {}",
-                    symbol.file.display(),
-                    symbol.line,
-                    symbol.qualified_name
-                )
-            })
-            .collect();
-        serde_json::json!({
-            "files": file_paths,
-            "symbols": self.symbols,
-            "edges": self.edges,
-            "unused": unused,
-        })
-        .to_string()
     }
 }
 
@@ -1002,75 +793,6 @@ fn resolve_import_target<'a>(
             path.file_stem()
                 .is_some_and(|candidate| candidate == stem.as_str())
         })
-}
-
-/// Structural summary of the architecture index.
-#[derive(Debug, Default)]
-pub struct GraphMetrics {
-    /// Symbols with no incoming call edges.
-    pub roots: usize,
-    /// Symbols with no outgoing call edges.
-    pub leaves: usize,
-    /// (symbol index, incoming edge count) of the most-called symbol.
-    pub max_fan_in: Option<(usize, usize)>,
-    /// (symbol index, outgoing edge count) of the most-calling symbol.
-    pub max_fan_out: Option<(usize, usize)>,
-    /// Longest resolved acyclic call chain, in hops.
-    pub longest_chain: usize,
-}
-
-/// Longest acyclic path out of `node` (memoized; back-edges contribute 0).
-/// Iterative DFS with an explicit stack: recursion depth is bounded by the
-/// symbol count, so pathological call chains cannot overflow the stack.
-fn longest_chain(node: usize, adjacency: &[Vec<usize>], memo: &mut [Option<usize>]) -> usize {
-    enum Frame {
-        Enter(usize),
-        Exit(usize),
-    }
-    let mut active = vec![false; memo.len()];
-    let mut stack = vec![Frame::Enter(node)];
-    while let Some(frame) = stack.pop() {
-        match frame {
-            Frame::Enter(current) => {
-                if memo[current].is_some() || active[current] {
-                    continue; // known, or a back-edge (contributes 0 via the missing memo)
-                }
-                active[current] = true;
-                stack.push(Frame::Exit(current));
-                for &next in adjacency[current].iter().rev() {
-                    stack.push(Frame::Enter(next));
-                }
-            }
-            Frame::Exit(current) => {
-                active[current] = false;
-                let best = adjacency[current]
-                    .iter()
-                    .map(|&next| 1 + memo[next].unwrap_or(0))
-                    .max()
-                    .unwrap_or(0);
-                memo[current] = Some(best);
-            }
-        }
-    }
-    memo[node].unwrap_or(0)
-}
-
-/// Sanitizes text for embedding in a mermaid quoted label: `"` is replaced
-/// (the label is already inside `"..."`) and newlines are collapsed — call
-/// text containing multi-line string literals (Java text blocks) or quotes
-/// would otherwise produce invalid mermaid.
-fn mermaid_label(text: &str) -> String {
-    text.replace('"', "'").replace(['\n', '\r'], " ")
-}
-
-impl GraphSymbol {
-    fn kind_label(&self) -> &'static str {
-        match self.kind {
-            SymbolKind::Function => "fn",
-            SymbolKind::Method => "method",
-            SymbolKind::Constructor => "ctor",
-        }
-    }
 }
 
 fn collect_symbols(
@@ -1602,28 +1324,6 @@ class B {
     }
 
     #[test]
-    fn unused_lists_symbols_without_callers() {
-        let graph = CodeGraph::build(vec![indexed(
-            "App.java",
-            Language::Java,
-            r#"
-class A {
-    void main() { used(); }
-    void used() {}
-    void dead() {}
-}
-"#,
-        )]);
-        let names: Vec<&str> = graph
-            .unused()
-            .iter()
-            .map(|symbol| symbol.name.as_str())
-            .collect();
-        assert!(names.contains(&"dead"));
-        assert!(!names.contains(&"used"));
-    }
-
-    #[test]
     fn type_guided_resolution_distinguishes_same_named_methods() {
         let graph = CodeGraph::build(vec![indexed(
             "App.java",
@@ -1659,56 +1359,6 @@ class C { void run() {} }
             "C.run",
             "parameter type C must guide resolution"
         );
-    }
-
-    #[test]
-    fn metrics_report_fan_in_fan_out_and_longest_chain() {
-        let graph = CodeGraph::build(vec![indexed(
-            "App.java",
-            Language::Java,
-            r#"
-class A {
-    void main(B b, C c, D d) {
-        b.h1();
-        b.h1();
-        c.h2();
-    }
-}
-class B { void h1(D d) { d.h3(); } }
-class C { void h2(D d) { d.h3(); } }
-class D { void h3() {} }
-"#,
-        )]);
-        let metrics = graph.metrics();
-        assert_eq!(metrics.longest_chain, 2, "A.main -> B.h1 -> D.h3");
-        let (fan_in_index, fan_in) = metrics.max_fan_in.expect("fan-in exists");
-        assert_eq!(graph.symbols[fan_in_index].qualified_name, "D.h3");
-        assert_eq!(fan_in, 2);
-        let (fan_out_index, fan_out) = metrics.max_fan_out.expect("fan-out exists");
-        assert_eq!(graph.symbols[fan_out_index].qualified_name, "A.main");
-        assert_eq!(fan_out, 3);
-    }
-
-    #[test]
-    fn metrics_terminate_on_recursive_and_cyclic_call_graphs() {
-        // Self-recursive `loop()` and the mutual `ping`/`pong` cycle would
-        // recurse forever in the longest-chain walk; back-edges must
-        // contribute 0 hops instead.
-        let graph = CodeGraph::build(vec![indexed(
-            "App.java",
-            Language::Java,
-            r#"
-class A {
-    void main() { loop(); }
-    void loop() { loop(); }
-    void ping() { pong(); }
-    void pong() { ping(); }
-}
-"#,
-        )]);
-        let metrics = graph.metrics();
-        // main -> loop is the longest acyclic chain (loop -> loop is a back-edge).
-        assert_eq!(metrics.longest_chain, 2, "main -> loop");
     }
 
     #[test]
@@ -1851,55 +1501,6 @@ def view():
     }
 
     #[test]
-    fn renders_mermaid_and_json() {
-        let graph = CodeGraph::build(vec![indexed(
-            "App.java",
-            Language::Java,
-            "class A { void run() { helper(); } void helper() {} }",
-        )]);
-        let mermaid = graph.to_mermaid();
-        assert!(mermaid.starts_with("graph TD"));
-        assert!(mermaid.contains("n0 --> n1"));
-        let json = graph.to_json();
-        assert!(json.contains("\"qualified_name\":\"A.run\""));
-    }
-
-    #[test]
-    fn mermaid_escapes_quotes_and_newlines_in_labels() {
-        // A call whose text contains a multi-line string literal (Java text
-        // block) would break the mermaid parser unless the label is sanitized.
-        let graph = CodeGraph::build(vec![indexed(
-            "App.java",
-            Language::Java,
-            r#"
-class A {
-    void run() {
-        """
-        select * from t where id = 'x'
-        """.formatted("a", "b");
-    }
-}
-"#,
-        )]);
-        let mermaid = graph.to_mermaid();
-        assert!(
-            !mermaid.contains("\"\"\""),
-            "text-block quotes must be escaped: {mermaid}"
-        );
-        assert!(
-            mermaid.contains("'''"),
-            "escaped quotes must appear in the label: {mermaid}"
-        );
-        for line in mermaid.lines() {
-            assert!(
-                line == "graph TD" || line.trim_start().starts_with("n"),
-                "every line must be the header or a node/edge statement: {line:?}"
-            );
-        }
-        assert!(mermaid.contains("formatted"));
-    }
-
-    #[test]
     fn snapshot_round_trip_preserves_symbols_edges_and_resolution() {
         let files = vec![
             indexed(
@@ -1960,10 +1561,6 @@ class UserService {
         assert_eq!(
             restored.resolved_callees_for_file(Path::new("Controller.java"), "deleteUser"),
             graph.resolved_callees_for_file(Path::new("Controller.java"), "deleteUser"),
-        );
-        assert_eq!(
-            restored.symbol_locations("deleteUser"),
-            graph.symbol_locations("deleteUser")
         );
         // Placeholder files exist for display, but carry no tree.
         assert_eq!(restored.files.len(), 2);

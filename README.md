@@ -88,19 +88,11 @@ hawk baseline create | status
 hawk config
 ```
 
-Architecture indexing — `hawk graph` builds a project-wide index of symbols
-and call edges from the scanned files, resolves calls to their definitions,
-and lists symbols with no callers (dead-code review):
-
-```bash
-hawk graph                              # text listing of symbols + call edges
-hawk graph ./src --format json          # machine-readable graph
-hawk graph ./src --format mermaid       # flowchart source (mermaid renderer)
-```
-
-The text listing ends with a summary (roots/leaves, most-called and
-most-calling symbols, longest resolved call chain) for quick architecture
-review. Callee resolution uses the strongest available signal, in order:
+Cross-file taint analysis runs during normal scans: the project-wide symbol
+and call-edge index resolves calls to their definitions, so a sink inside a
+service class reached from a controller is reported at the call site,
+following multi-hop chains (handler → service → repository) with cycle
+guards. Callee resolution uses the strongest available signal, in order:
 
 1. import bindings (`import { deleteUser } from "./UserService"`,
    aliases and `import * as ns` namespaces included; Python `from x import y`)
@@ -110,12 +102,7 @@ review. Callee resolution uses the strongest available signal, in order:
    implement an interface-typed receiver (bodyless interface declarations are
    skipped in favor of real implementations)
 
-The same index powers cross-file taint analysis during normal scans: a sink
-inside a service class reached from a controller is reported at the call site,
-following multi-hop chains (handler → service → repository) with cycle
-guards.
-
-These modes keep Hawk useful without sending the source to an external AI/SaaS
+This keeps Hawk useful without sending the source to an external AI/SaaS
 service; analysis stays fully local.
 
 ## Architecture Direction
