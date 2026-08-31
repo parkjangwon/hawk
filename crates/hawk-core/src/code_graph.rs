@@ -275,9 +275,10 @@ impl CodeGraph {
             }
         }
         let mut memo: Vec<Option<usize>> = vec![None; self.symbols.len()];
+        let mut active = vec![false; self.symbols.len()];
         let mut longest = 0usize;
         for start in 0..self.symbols.len() {
-            longest = longest.max(longest_chain(start, &adjacency, &mut memo));
+            longest = longest.max(longest_chain(start, &adjacency, &mut memo, &mut active));
         }
         GraphMetrics {
             roots: self.unused().len(),
@@ -710,15 +711,27 @@ pub struct GraphMetrics {
 }
 
 /// Longest acyclic path out of `node` (memoized; back-edges contribute 0).
-fn longest_chain(node: usize, adjacency: &[Vec<usize>], memo: &mut Vec<Option<usize>>) -> usize {
+/// `active` marks the current DFS path so cycles terminate instead of
+/// recursing forever.
+fn longest_chain(
+    node: usize,
+    adjacency: &[Vec<usize>],
+    memo: &mut Vec<Option<usize>>,
+    active: &mut [bool],
+) -> usize {
     if let Some(known) = memo[node] {
         return known;
     }
+    if active[node] {
+        return 0; // back-edge: not part of an acyclic chain
+    }
+    active[node] = true;
     let best = adjacency[node]
         .iter()
-        .map(|next| 1 + longest_chain(*next, adjacency, memo))
+        .map(|next| 1 + longest_chain(*next, adjacency, memo, active))
         .max()
         .unwrap_or(0);
+    active[node] = false;
     memo[node] = Some(best);
     best
 }
@@ -1346,6 +1359,28 @@ class D { void h3() {} }
         let (fan_out_index, fan_out) = metrics.max_fan_out.expect("fan-out exists");
         assert_eq!(graph.symbols[fan_out_index].qualified_name, "A.main");
         assert_eq!(fan_out, 3);
+    }
+
+    #[test]
+    fn metrics_terminate_on_recursive_and_cyclic_call_graphs() {
+        // Self-recursive `loop()` and the mutual `ping`/`pong` cycle would
+        // recurse forever in the longest-chain walk; back-edges must
+        // contribute 0 hops instead.
+        let graph = CodeGraph::build(vec![indexed(
+            "App.java",
+            Language::Java,
+            r#"
+class A {
+    void main() { loop(); }
+    void loop() { loop(); }
+    void ping() { pong(); }
+    void pong() { ping(); }
+}
+"#,
+        )]);
+        let metrics = graph.metrics();
+        // main -> loop is the longest acyclic chain (loop -> loop is a back-edge).
+        assert_eq!(metrics.longest_chain, 2, "main -> loop");
     }
 
     #[test]

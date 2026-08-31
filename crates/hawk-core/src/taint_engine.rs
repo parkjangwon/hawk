@@ -293,10 +293,10 @@ impl<'a> State<'a> {
         }
         match node.kind() {
             kind if declaration_kinds(self.language).contains(&kind) => {
-                self.handle_local_declaration(node, self.source)
+                self.handle_local_declaration(node, self.source, &mut Vec::new())
             }
             kind if assignment_kinds(self.language).contains(&kind) => {
-                self.handle_assignment(node, self.source)
+                self.handle_assignment(node, self.source, &mut Vec::new())
             }
             kind if call_kinds(self.language).contains(&kind) => {
                 self.handle_sink_expression(node, self.source)
@@ -374,7 +374,12 @@ impl<'a> State<'a> {
         self.tainted.extend(body_state);
     }
 
-    fn handle_local_declaration(&mut self, node: AstNode<'_>, source: &'a str) {
+    fn handle_local_declaration(
+        &mut self,
+        node: AstNode<'_>,
+        source: &'a str,
+        chain: &mut Vec<String>,
+    ) {
         // Java exposes the declarator as a field; JavaScript/Python grammars
         // place `variable_declarator` nodes as direct children.
         // Go `var x = ...` uses var_spec with direct name/value fields.
@@ -402,14 +407,19 @@ impl<'a> State<'a> {
             .map(String::from);
         self.touched.insert(name.clone());
         match value {
-            Some(value) => self.apply_assignment(&name, &value),
+            Some(value) => self.apply_assignment(&name, &value, chain),
             None => {
                 self.tainted.remove(&name);
             }
         }
     }
 
-    fn handle_assignment(&mut self, node: AstNode<'_>, source: &'a str) {
+    fn handle_assignment(
+        &mut self,
+        node: AstNode<'_>,
+        source: &'a str,
+        chain: &mut Vec<String>,
+    ) {
         let Some(left) = node
             .child_by_field_name("left")
             .and_then(|l| l.text(source))
@@ -424,12 +434,12 @@ impl<'a> State<'a> {
         else {
             return;
         };
-        self.apply_assignment(&left, &right);
+        self.apply_assignment(&left, &right, chain);
 
         // Sink assignments (e.g. `el.innerHTML = userInput`, `document.body.innerHTML =
         // tainted`) are DOM XSS sinks even though they are not calls.
         if let Some(text) = node.text(source).map(String::from) {
-            if self.is_sink(&text) && self.expr_is_tainted(&right, &mut Vec::new()) {
+            if self.is_sink(&text) && self.expr_is_tainted(&right, chain) {
                 self.emit_finding(node, text);
             }
         }
@@ -463,12 +473,14 @@ impl<'a> State<'a> {
     /// Taints `target` when `value` carries source data (a source call, a
     /// tainted variable, a tainted method return, or a combination); otherwise
     /// clears it. If the value is a sanitizer call, the target is explicitly
-    /// marked clean.
-    fn apply_assignment(&mut self, target: &str, value: &str) {
+    /// marked clean. `chain` is the in-progress callee path: assignments inside
+    /// a callee body must keep it, or a (mutually) recursive callee re-enters
+    /// its own analysis forever.
+    fn apply_assignment(&mut self, target: &str, value: &str, chain: &mut Vec<String>) {
         self.touched.insert(target.to_string());
         if self.is_sanitizer_call(value) {
             self.tainted.remove(target);
-        } else if self.expr_is_tainted(value, &mut Vec::new()) {
+        } else if self.expr_is_tainted(value, chain) {
             self.tainted.insert(target.to_string());
         } else {
             self.tainted.remove(target);
@@ -622,10 +634,10 @@ impl<'a> State<'a> {
         }
         match node.kind() {
             kind if declaration_kinds(self.language).contains(&kind) => {
-                self.handle_local_declaration(node, source)
+                self.handle_local_declaration(node, source, chain)
             }
             kind if assignment_kinds(self.language).contains(&kind) => {
-                self.handle_assignment(node, source)
+                self.handle_assignment(node, source, chain)
             }
             _ => {}
         }
@@ -728,10 +740,10 @@ impl<'a> State<'a> {
         }
         match node.kind() {
             kind if declaration_kinds(self.language).contains(&kind) => {
-                self.handle_local_declaration(node, source)
+                self.handle_local_declaration(node, source, chain)
             }
             kind if assignment_kinds(self.language).contains(&kind) => {
-                self.handle_assignment(node, source)
+                self.handle_assignment(node, source, chain)
             }
             _ => {}
         }

@@ -833,4 +833,73 @@ class UserService {
         );
         assert_eq!(findings[0].sink, "st.executeQuery(sql)");
     }
+
+    // ---------- recursion guards (regressions) ----------
+
+    #[test]
+    fn self_recursive_method_does_not_loop_forever() {
+        // `get` calls `entries.get(...)`; parse_call strips the receiver so the
+        // callee name is `get` — the method itself. Analyzing the assignment
+        // inside the callee must keep the in-progress callee chain, or the
+        // analysis re-enters `get` forever and overflows the stack.
+        let source = r#"
+class Cache {
+    java.util.Map<String, String> entries;
+
+    String get(String key) {
+        var entry = entries.get(key);
+        return entry == null ? "" : entry;
+    }
+
+    void run(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        var id = req.getParameter("id");
+        st.executeQuery("SELECT * FROM t WHERE id='" + get(id) + "'");
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "recursive callee must terminate and not lose the real flow"
+        );
+        assert_eq!(findings[0].sink, "st.executeQuery(\"SELECT * FROM t WHERE id='\" + get(id) + \"'\")");
+    }
+
+    #[test]
+    fn mutually_recursive_methods_do_not_loop_forever() {
+        // a -> b -> a with an assignment in b's body: the assignment analysis
+        // inside the callee must keep the callee chain, or b re-enters a
+        // forever. A literal-triggered call forces the recursive callee
+        // analysis; the real taint flows through a(id) at the sink.
+        let source = r#"
+class Pair {
+    String a(String v) { return b(v); }
+    String b(String v) {
+        var x = a(v);
+        return x;
+    }
+
+    void handle(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        var id = req.getParameter("id");
+        var unused = a("fixed");
+        st.executeQuery("SELECT * FROM t WHERE id='" + a(id) + "'");
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "mutual recursion must terminate and keep the real flow"
+        );
+        assert!(
+            findings[0].sink.contains("executeQuery"),
+            "finding should name the sink call"
+        );
+    }
 }
