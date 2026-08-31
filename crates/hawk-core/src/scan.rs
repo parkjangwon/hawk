@@ -121,12 +121,39 @@ impl Scanner {
                 result.findings.push(finding.clone());
             }
         }
+        result.rule_categories = self.summarize_categories(&result);
         Ok(result)
     }
 
     /// Restricts the loaded packs to the named ones (see `--pack`).
     pub fn select_packs(&mut self, wanted: &[String]) {
         self.packs.select_packs(wanted);
+    }
+
+    /// Rolls the loaded rules and the scan's findings up per category. Every
+    /// loaded category appears — zero-finding categories included — so the
+    /// report distinguishes "scanned and clean" from "not covered".
+    fn summarize_categories(&self, result: &ScanResult) -> Vec<CategorySummary> {
+        use std::collections::BTreeMap;
+        let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for (category, rules) in self.packs.rule_categories() {
+            counts.insert(category, (rules, 0));
+        }
+        for finding in result.findings.iter() {
+            let category = finding
+                .category
+                .clone()
+                .unwrap_or_else(|| "uncategorized".into());
+            counts.entry(category).or_default().1 += 1;
+        }
+        counts
+            .into_iter()
+            .map(|(category, (rules, findings))| CategorySummary {
+                category,
+                rules,
+                findings,
+            })
+            .collect()
     }
 
     pub fn load_pack_dirs(&mut self, dirs: &[PathBuf]) -> Result<(), ScanError> {
@@ -351,6 +378,16 @@ pub struct FileIssue {
     pub message: String,
 }
 
+/// Per-category rollup of the loaded rules and their findings. Categories
+/// with zero findings are listed too, so a report can say "no findings"
+/// instead of silently omitting them.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CategorySummary {
+    pub category: String,
+    pub rules: usize,
+    pub findings: usize,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     pub discovered_files: usize,
@@ -360,6 +397,7 @@ pub struct ScanResult {
     pub findings: Findings,
     pub rule_count: usize,
     pub pack_names: Vec<String>,
+    pub rule_categories: Vec<CategorySummary>,
 }
 
 impl ScanResult {

@@ -114,6 +114,7 @@ pub struct IssueView {
 pub struct JsonReport {
     pub version: String,
     pub severity_summary: SeveritySummary,
+    pub categories: Vec<crate::scan::CategorySummary>,
     pub findings: Vec<FindingView>,
     pub issues: Vec<IssueView>,
     pub metadata: ReportMetadata,
@@ -149,6 +150,7 @@ impl JsonReporter {
         let report = JsonReport {
             version: "1.0".into(),
             severity_summary: summary,
+            categories: result.rule_categories.clone(),
             findings: views,
             issues,
             metadata: ReportMetadata::from_scan(result, duration_ms),
@@ -375,6 +377,29 @@ impl HtmlReporter {
             let _ = writeln!(out, "<li>{label}: {value}</li>");
         }
         let _ = writeln!(out, "</ul>");
+        let _ = writeln!(
+            out,
+            "<h2>Rule Categories ({})</h2>",
+            result.rule_categories.len()
+        );
+        let _ = writeln!(
+            out,
+            "<table><thead><tr><th>Category</th><th>Rules</th><th>Findings</th></tr></thead><tbody>"
+        );
+        for category in &result.rule_categories {
+            let findings = match category.findings {
+                0 => "<em>No findings</em>".to_string(),
+                n => n.to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&category.category),
+                category.rules,
+                findings
+            );
+        }
+        let _ = writeln!(out, "</tbody></table>");
         let _ = writeln!(out, "<h2>Findings ({})</h2>", views.len());
         let _ = writeln!(
             out,
@@ -477,8 +502,20 @@ mod tests {
             }],
             findings,
             scanned_files: 1,
-            rule_count: 1,
+            rule_count: 2,
             pack_names: vec!["test".into()],
+            rule_categories: vec![
+                crate::scan::CategorySummary {
+                    category: "injection".into(),
+                    rules: 1,
+                    findings: 1,
+                },
+                crate::scan::CategorySummary {
+                    category: "xss".into(),
+                    rules: 1,
+                    findings: 0,
+                },
+            ],
         }
     }
 
@@ -490,6 +527,17 @@ mod tests {
         assert!(json.contains("\"high\": 1"));
         assert!(json.contains("\"files_scanned\": 1"));
         assert!(json.contains("\"issues\""));
+        assert!(json.contains("\"categories\""));
+        assert!(json.contains("\"category\": \"xss\""));
+        assert!(json.contains("\"findings\": 0"));
+    }
+
+    #[test]
+    fn html_report_lists_every_category_with_no_findings_marker() {
+        let html = HtmlReporter.render(&result(), 5);
+        assert!(html.contains("Rule Categories (2)"));
+        assert!(html.contains("No findings"));
+        assert!(html.contains("injection"));
     }
 
     #[test]
@@ -551,6 +599,7 @@ mod tests {
             scanned_files: 1,
             rule_count: 1,
             pack_names: vec!["test".into()],
+            rule_categories: Vec::new(),
         };
         let html = HtmlReporter.render(&result, 1);
         assert!(html.contains("&lt;script&gt;"));

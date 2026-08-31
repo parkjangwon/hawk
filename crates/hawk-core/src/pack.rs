@@ -729,6 +729,22 @@ impl PackRegistry {
             .collect()
     }
 
+    /// Loaded rules grouped by declared category ("uncategorized" when a
+    /// rule declares none), as (category, rule count) sorted by category.
+    /// Lets reports list every category — including ones with zero findings.
+    pub fn rule_categories(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for rule in self.iter() {
+            let category = rule
+                .def
+                .category
+                .clone()
+                .unwrap_or_else(|| "uncategorized".into());
+            *counts.entry(category).or_default() += 1;
+        }
+        counts.into_iter().collect()
+    }
+
     pub fn cache_namespace(&self) -> String {
         let mut material = String::new();
         for (meta, rules) in &self.packs {

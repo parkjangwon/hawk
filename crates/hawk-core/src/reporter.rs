@@ -48,8 +48,37 @@ impl TerminalReporter {
             result.skipped_files,
             result.issues.len()
         );
+        render_categories(&mut output, result);
 
         output
+    }
+}
+
+/// Per-category rollup listing every loaded category, so a clean category
+/// reads "no findings" instead of disappearing from the report entirely.
+fn render_categories(output: &mut String, result: &ScanResult) {
+    if result.rule_categories.is_empty() {
+        return;
+    }
+    let _ = writeln!(output, "\nCategories ({}):", result.rule_categories.len());
+    for category in &result.rule_categories {
+        let findings = match category.findings {
+            0 => "no findings".to_string(),
+            1 => "1 finding".to_string(),
+            n => format!("{n} findings"),
+        };
+        let rules = if category.rules == 1 {
+            "1 rule".to_string()
+        } else {
+            format!("{} rules", category.rules)
+        };
+        let _ = writeln!(
+            output,
+            "  {:<30} {:>7}, {}",
+            format!("{}:", category.category),
+            rules,
+            findings
+        );
     }
 }
 
@@ -100,6 +129,7 @@ mod tests {
             scanned_files: 1,
             rule_count: 0,
             pack_names: Vec::new(),
+            rule_categories: Vec::new(),
         }
     }
 
@@ -154,5 +184,68 @@ mod tests {
         let output = TerminalReporter.render(&result_with(vec![], findings));
 
         assert!(output.contains("2 findings in 1 file(s)\n"));
+    }
+
+    #[test]
+    fn categories_render_rules_and_no_findings_markers() {
+        let output = TerminalReporter.render(&ScanResult {
+            discovered_files: 3,
+            skipped_files: 0,
+            issues: vec![],
+            findings: Findings::new(),
+            scanned_files: 3,
+            rule_count: 3,
+            pack_names: vec!["test".into()],
+            rule_categories: vec![
+                crate::scan::CategorySummary {
+                    category: "sql-injection".into(),
+                    rules: 1,
+                    findings: 0,
+                },
+                crate::scan::CategorySummary {
+                    category: "xss".into(),
+                    rules: 2,
+                    findings: 0,
+                },
+            ],
+        });
+
+        assert!(output.contains("Categories (2):"));
+        assert!(output.contains("sql-injection:"));
+        assert!(output.contains("1 rule, no findings"));
+        assert!(output.contains("xss:"));
+        assert!(output.contains("2 rules, no findings"));
+    }
+
+    #[test]
+    fn single_finding_uses_singular_wording_in_categories() {
+        let mut findings = Findings::new();
+        findings.push(finding("rule.a", Severity::High, "first"));
+        let output = TerminalReporter.render(&ScanResult {
+            discovered_files: 1,
+            skipped_files: 0,
+            issues: vec![],
+            findings,
+            scanned_files: 1,
+            rule_count: 2,
+            pack_names: vec!["test".into()],
+            rule_categories: vec![
+                crate::scan::CategorySummary {
+                    category: "injection".into(),
+                    rules: 1,
+                    findings: 1,
+                },
+                crate::scan::CategorySummary {
+                    category: "xss".into(),
+                    rules: 1,
+                    findings: 0,
+                },
+            ],
+        });
+
+        assert!(output.contains("injection:"));
+        assert!(output.contains("1 rule, 1 finding"));
+        assert!(output.contains("xss:"));
+        assert!(output.contains("no findings"));
     }
 }
