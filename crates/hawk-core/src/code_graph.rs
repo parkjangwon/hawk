@@ -581,7 +581,7 @@ impl CodeGraph {
                     .unwrap_or_default()
                     .to_string_lossy()
             );
-            out.push_str(&format!("  n{index}[\"{}\"]\n", label.replace('"', "'")));
+            out.push_str(&format!("  n{index}[\"{}\"]\n", mermaid_label(&label)));
         }
         let mut external_id = 0usize;
         for edge in &self.edges {
@@ -591,7 +591,8 @@ impl CodeGraph {
                 external_id += 1;
                 out.push_str(&format!(
                     "  n{} --> n_ext{external_id}[\"external: {}\"]\n",
-                    edge.caller, edge.callee_text
+                    edge.caller,
+                    mermaid_label(&edge.callee_text)
                 ));
             }
         }
@@ -1052,6 +1053,14 @@ fn longest_chain(node: usize, adjacency: &[Vec<usize>], memo: &mut [Option<usize
         }
     }
     memo[node].unwrap_or(0)
+}
+
+/// Sanitizes text for embedding in a mermaid quoted label: `"` is replaced
+/// (the label is already inside `"..."`) and newlines are collapsed — call
+/// text containing multi-line string literals (Java text blocks) or quotes
+/// would otherwise produce invalid mermaid.
+fn mermaid_label(text: &str) -> String {
+    text.replace('"', "'").replace(['\n', '\r'], " ")
 }
 
 impl GraphSymbol {
@@ -1853,6 +1862,41 @@ def view():
         assert!(mermaid.contains("n0 --> n1"));
         let json = graph.to_json();
         assert!(json.contains("\"qualified_name\":\"A.run\""));
+    }
+
+    #[test]
+    fn mermaid_escapes_quotes_and_newlines_in_labels() {
+        // A call whose text contains a multi-line string literal (Java text
+        // block) would break the mermaid parser unless the label is sanitized.
+        let graph = CodeGraph::build(vec![indexed(
+            "App.java",
+            Language::Java,
+            r#"
+class A {
+    void run() {
+        """
+        select * from t where id = 'x'
+        """.formatted("a", "b");
+    }
+}
+"#,
+        )]);
+        let mermaid = graph.to_mermaid();
+        assert!(
+            !mermaid.contains("\"\"\""),
+            "text-block quotes must be escaped: {mermaid}"
+        );
+        assert!(
+            mermaid.contains("'''"),
+            "escaped quotes must appear in the label: {mermaid}"
+        );
+        for line in mermaid.lines() {
+            assert!(
+                line == "graph TD" || line.trim_start().starts_with("n"),
+                "every line must be the header or a node/edge statement: {line:?}"
+            );
+        }
+        assert!(mermaid.contains("formatted"));
     }
 
     #[test]
