@@ -6,9 +6,15 @@
 //! findings instead of re-analyzing — a big win for large trees. The cache
 //! key includes a "schema" string (Hawk version + rule-pack versions) so
 //! results are never reused across incompatible rule sets.
+//!
+//! Besides per-file findings, the cache stores the project-wide architecture
+//! graph as a snapshot (see `code_graph::GraphSnapshot`): when every file's
+//! content hash matches the snapshot, a scan skips parsing and re-indexing
+//! entirely.
 
 use std::path::{Path, PathBuf};
 
+use crate::code_graph::GraphSnapshot;
 use crate::finding::{Finding, Findings};
 
 /// The schema discriminator. Bump when the finding model or analysis changes
@@ -117,6 +123,44 @@ impl Cache {
         })?;
         std::fs::write(&path, content).map_err(|e| CacheError {
             message: format!("unable to write cache: {e}"),
+        })
+    }
+
+    /// Path of the project-wide graph snapshot for this cache namespace.
+    fn graph_snapshot_path(&self) -> PathBuf {
+        self.root.join(format!(
+            "graph.{}.bin",
+            hash_bytes(self.namespace.as_bytes())
+        ))
+    }
+
+    /// Loads the persisted architecture-graph snapshot, rejecting snapshots
+    /// from an incompatible schema. Best-effort: corrupt or missing files
+    /// yield `None` and the caller rebuilds.
+    pub fn load_graph_snapshot(&self) -> Option<GraphSnapshot> {
+        let path = self.graph_snapshot_path();
+        let bytes = std::fs::read(path).ok()?;
+        let snapshot: GraphSnapshot = bincode::deserialize(&bytes).ok()?;
+        if snapshot.schema != self.namespace {
+            return None;
+        }
+        Some(snapshot)
+    }
+
+    /// Persists the architecture-graph snapshot for this cache namespace.
+    pub fn save_graph_snapshot(&self, mut snapshot: GraphSnapshot) -> Result<(), CacheError> {
+        snapshot.schema = self.namespace.clone();
+        let path = self.graph_snapshot_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CacheError {
+                message: format!("unable to create cache dir: {e}"),
+            })?;
+        }
+        let bytes = bincode::serialize(&snapshot).map_err(|e| CacheError {
+            message: format!("unable to serialize graph snapshot: {e}"),
+        })?;
+        std::fs::write(&path, bytes).map_err(|e| CacheError {
+            message: format!("unable to write graph snapshot: {e}"),
         })
     }
 }

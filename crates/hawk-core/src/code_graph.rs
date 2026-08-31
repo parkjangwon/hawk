@@ -7,14 +7,16 @@
 //! crosses file boundaries along real call chains (handler → service →
 //! repository → sink).
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::AstNode,
     language::Language,
-    parser::SyntaxTree,
+    parser::{ParserRegistry, SyntaxTree},
     taint_engine::{call_kinds, method_like_kinds, parse_call},
 };
 
@@ -51,9 +53,25 @@ impl IndexedFile {
         }
         visit(self.tree.root(), line, method_like_kinds(self.language))
     }
+
+    /// The method-like node containing `byte` — O(depth) via the tree's
+    /// descendant lookup, instead of scanning the whole tree for a line.
+    pub fn method_node_at_byte(&self, byte: usize) -> Option<AstNode<'_>> {
+        let kinds = method_like_kinds(self.language);
+        let mut current = self
+            .tree
+            .raw_root_node()
+            .descendant_for_byte_range(byte, byte)?;
+        loop {
+            if kinds.contains(&current.kind()) {
+                return Some(AstNode::new(current));
+            }
+            current = current.parent()?;
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SymbolKind {
     Function,
@@ -61,7 +79,7 @@ pub enum SymbolKind {
     Constructor,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphSymbol {
     pub name: String,
     /// `Class.method` when an enclosing class is visible; `method` otherwise.
@@ -71,10 +89,12 @@ pub struct GraphSymbol {
     /// Index into `CodeGraph::files`.
     pub file_index: usize,
     pub line: usize,
+    /// Byte offset of the declaration node, for O(depth) re-location.
+    pub start_byte: usize,
     pub language: Language,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallEdge {
     /// Symbol index of the caller.
     pub caller: usize,
@@ -113,15 +133,69 @@ pub struct CodeGraph {
     imports: Vec<(usize, String, String, String)>,
     /// (file index, namespace name, imported path) for `import * as ns`.
     namespaces: Vec<(usize, String, String)>,
+    /// simple symbol name -> (file index, declaration byte); built once per
+    /// scan and shared by every taint analysis instead of being recomputed
+    /// per rule per file.
+    name_locations: HashMap<String, Vec<(usize, usize)>>,
+    /// (caller file index, simple callee name) -> resolved (file index, byte).
+    resolved_by_file_name: HashMap<(usize, String), Vec<(usize, usize)>>,
+    /// File path -> file index, for path-keyed lookups.
+    file_index_by_path: HashMap<PathBuf, usize>,
+    /// When the graph is restored from a snapshot, the files' trees are not
+    /// loaded; `lazy_files` re-parses them on demand (append-only, so
+    /// references into parsed entries stay valid for the graph's lifetime).
+    lazy_files: Option<LazyFiles>,
 }
 
 /// `class X extends Y implements A, B` — superclass and interface facts.
-#[derive(Debug, Clone)]
-struct ClassInfo {
-    file_index: usize,
-    name: String,
-    extends: Option<String>,
-    implements: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassInfo {
+    pub file_index: usize,
+    pub name: String,
+    pub extends: Option<String>,
+    pub implements: Vec<String>,
+}
+
+/// On-demand parsing for snapshot-restored graphs: file metadata plus a
+/// per-file cache of parsed content, filled the first time a callee body in
+/// that file is needed.
+#[derive(Debug)]
+struct LazyFiles {
+    paths: Vec<PathBuf>,
+    languages: Vec<Language>,
+    parsed: Vec<OnceCell<Box<IndexedFile>>>,
+    parsers: ParserRegistry,
+}
+
+impl LazyFiles {
+    fn new(meta: &[GraphFileMeta]) -> Self {
+        Self {
+            paths: meta.iter().map(|file| file.path.clone()).collect(),
+            languages: meta
+                .iter()
+                .map(|file| Language::from_path(&file.path))
+                .collect(),
+            parsed: (0..meta.len()).map(|_| OnceCell::new()).collect(),
+            parsers: ParserRegistry::default(),
+        }
+    }
+
+    fn get(&self, file_index: usize) -> Option<&IndexedFile> {
+        let cell = self.parsed.get(file_index)?;
+        if cell.get().is_none() {
+            let path = self.paths.get(file_index)?;
+            let language = *self.languages.get(file_index)?;
+            let source = std::fs::read_to_string(path).ok()?;
+            let tree = self.parsers.parser_for(language)?.parse(&source).ok()?;
+            let _ = cell.set(Box::new(IndexedFile {
+                path: path.clone(),
+                language,
+                tree,
+                source,
+            }));
+        }
+        cell.get().map(|file| &**file)
+    }
 }
 
 impl CodeGraph {
@@ -136,6 +210,10 @@ impl CodeGraph {
             hierarchy: Vec::new(),
             imports: Vec::new(),
             namespaces: Vec::new(),
+            name_locations: HashMap::new(),
+            resolved_by_file_name: HashMap::new(),
+            file_index_by_path: HashMap::new(),
+            lazy_files: None,
         };
         for (file_index, file) in graph.files.iter().enumerate() {
             collect_symbols(
@@ -187,64 +265,174 @@ impl CodeGraph {
     /// Resolves every edge's callee against the project's symbols, from the
     /// most precise signal to the least: import bindings, namespace bindings,
     /// declared types (with superclass/interface fallback), then simple names
-    /// (same file preferred). Resolution reads a snapshot of the index so the
-    /// edges can be mutated in place.
+    /// (same file preferred). Resolution reads a snapshot of the index plus
+    /// prebuilt lookup tables, so the edges can be mutated in place.
     fn resolve_callees(&mut self) {
+        let mut symbols_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut qualified_index: HashMap<String, usize> = HashMap::new();
+        let mut symbols_by_file: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+        for (index, symbol) in self.symbols.iter().enumerate() {
+            symbols_by_name
+                .entry(symbol.name.clone())
+                .or_default()
+                .push(index);
+            qualified_index
+                .entry(symbol.qualified_name.clone())
+                .or_insert(index);
+            symbols_by_file
+                .entry(symbol.file.clone())
+                .or_default()
+                .push(index);
+        }
+        let mut imports_by_file_local: HashMap<(usize, String), (String, String)> = HashMap::new();
+        for (file, local, path, original) in &self.imports {
+            imports_by_file_local
+                .entry((*file, local.clone()))
+                .or_insert((path.clone(), original.clone()));
+        }
+        let mut namespaces_by_file: HashMap<(usize, String), String> = HashMap::new();
+        for (file, ns, path) in &self.namespaces {
+            namespaces_by_file
+                .entry((*file, ns.clone()))
+                .or_insert(path.clone());
+        }
+        let mut var_types_by_file_var: HashMap<(usize, String), Vec<(usize, String)>> =
+            HashMap::new();
+        for (file, line, variable, ty) in &self.var_types {
+            var_types_by_file_var
+                .entry((*file, variable.clone()))
+                .or_default()
+                .push((*line, ty.clone()));
+        }
+        let mut hierarchy_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut implements_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, info) in self.hierarchy.iter().enumerate() {
+            hierarchy_by_name
+                .entry(info.name.clone())
+                .or_default()
+                .push(index);
+            for interface in &info.implements {
+                implements_by_name
+                    .entry(interface.clone())
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let file_paths: HashSet<PathBuf> =
+            self.files.iter().map(|file| file.path.clone()).collect();
+        let mut files_by_parent: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for file in &self.files {
+            if let Some(parent) = file.path.parent() {
+                files_by_parent
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(file.path.clone());
+            }
+        }
         let ctx = ResolveCtx {
             symbols: self.symbols.clone(),
             files: &self.files,
-            var_types: self.var_types.clone(),
+            symbols_by_name,
+            qualified_index,
+            symbols_by_file,
+            imports_by_file_local,
+            namespaces_by_file,
+            var_types_by_file_var,
             hierarchy: self.hierarchy.clone(),
-            imports: self.imports.clone(),
-            namespaces: self.namespaces.clone(),
+            hierarchy_by_name,
+            implements_by_name,
+            file_paths,
+            files_by_parent,
         };
         for edge in &mut self.edges {
             resolve_edge(edge, &ctx);
         }
+        self.finalize_indices();
     }
 
-    /// (file index, declaration line) of every callee that calls in `path`
-    /// resolved to — the taint engine's precise cross-file lookup, reusing
-    /// the graph's import/type/hierarchy-aware resolution.
-    pub fn resolved_callees_for_file(&self, path: &Path, name: &str) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+    /// Builds the derived lookup tables shared by the taint engine: symbol
+    /// name locations and resolved callees per (caller file, simple name).
+    fn finalize_indices(&mut self) {
+        let mut name_locations: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        for symbol in &self.symbols {
+            name_locations
+                .entry(symbol.name.clone())
+                .or_default()
+                .push((symbol.file_index, symbol.start_byte));
+        }
+        let mut resolved_by_file_name: HashMap<(usize, String), Vec<(usize, usize)>> =
+            HashMap::new();
         for edge in &self.edges {
             let caller = &self.symbols[edge.caller];
-            if caller.file != *path {
-                continue;
-            }
             let simple = edge
                 .callee_text
                 .rsplit('.')
                 .next()
                 .unwrap_or(&edge.callee_text);
-            if simple != name {
-                continue;
-            }
             if let Some(callee) = edge.callee {
                 let symbol = &self.symbols[callee];
-                if seen.insert((symbol.file_index, symbol.line)) {
-                    out.push((symbol.file_index, symbol.line));
+                let entry = resolved_by_file_name
+                    .entry((caller.file_index, simple.to_string()))
+                    .or_default();
+                if !entry.iter().any(|&(file_index, byte)| {
+                    file_index == symbol.file_index && byte == symbol.start_byte
+                }) {
+                    entry.push((symbol.file_index, symbol.start_byte));
                 }
             }
         }
-        out
+        self.name_locations = name_locations;
+        self.resolved_by_file_name = resolved_by_file_name;
+        self.file_index_by_path = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| (file.path.clone(), index))
+            .collect();
     }
 
-    /// (file index, declaration line) of every symbol whose simple or
+    /// (file index, declaration byte) of every callee resolved from a call in
+    /// `path` — the taint engine's precise cross-file lookup, reusing the
+    /// graph's import/type/hierarchy-aware resolution.
+    pub fn resolved_callees_for_file(&self, path: &Path, name: &str) -> Vec<(usize, usize)> {
+        let Some(&file_index) = self.file_index_by_path.get(path) else {
+            return Vec::new();
+        };
+        self.resolved_by_file_name
+            .get(&(file_index, name.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// (file index, declaration byte) of every symbol whose simple or
     /// qualified name matches `name` (used for cross-file callee lookup).
     pub fn symbol_locations(&self, name: &str) -> Vec<(usize, usize)> {
+        if let Some(locations) = self.name_locations.get(name) {
+            return locations.clone();
+        }
+        // Dotted names can only match a qualified name; fall back to a scan.
         let suffix = format!(".{}", name);
         self.symbols
             .iter()
             .filter(|symbol| {
-                symbol.name == name
-                    || symbol.qualified_name == name
-                    || symbol.qualified_name.ends_with(&suffix)
+                symbol.qualified_name == name || symbol.qualified_name.ends_with(&suffix)
             })
-            .map(|symbol| (symbol.file_index, symbol.line))
+            .map(|symbol| (symbol.file_index, symbol.start_byte))
             .collect()
+    }
+
+    /// The prebuilt symbol name -> locations table, shared by taint analyses.
+    pub fn name_locations(&self) -> &HashMap<String, Vec<(usize, usize)>> {
+        &self.name_locations
+    }
+
+    /// The parsed file at `file_index`, re-parsing it on demand when the
+    /// graph was restored from a snapshot (its trees are not loaded).
+    pub fn indexed_file(&self, file_index: usize) -> Option<&IndexedFile> {
+        match &self.lazy_files {
+            None => self.files.get(file_index),
+            Some(lazy) => lazy.get(file_index),
+        }
     }
 
     /// Structural summary: fan-in/fan-out extremes and the longest resolved
@@ -267,18 +455,18 @@ impl CodeGraph {
             .max_by_key(|index| fan_out[*index])
             .map(|index| (index, fan_out[index]));
         let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); self.symbols.len()];
+        let mut seen_edges: HashSet<(usize, usize)> = HashSet::new();
         for edge in &self.edges {
             if let Some(callee) = edge.callee {
-                if !adjacency[edge.caller].contains(&callee) {
+                if seen_edges.insert((edge.caller, callee)) {
                     adjacency[edge.caller].push(callee);
                 }
             }
         }
         let mut memo: Vec<Option<usize>> = vec![None; self.symbols.len()];
-        let mut active = vec![false; self.symbols.len()];
         let mut longest = 0usize;
         for start in 0..self.symbols.len() {
-            longest = longest.max(longest_chain(start, &adjacency, &mut memo, &mut active));
+            longest = longest.max(longest_chain(start, &adjacency, &mut memo));
         }
         GraphMetrics {
             roots: self.unused().len(),
@@ -439,14 +627,128 @@ impl CodeGraph {
     }
 }
 
-/// Immutable snapshot of the index used during edge resolution.
+/// A serializable, tree-less representation of the architecture index plus the
+/// file identity list it was built from. Saved after a full build and restored
+/// on scans where every file's hash matches, skipping parsing and re-indexing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphSnapshot {
+    /// Cache namespace (schema + rule-pack identity); mismatches reject the
+    /// snapshot at load time.
+    pub schema: String,
+    /// Every scanned file's path and content hash, in discovery order.
+    pub files: Vec<GraphFileMeta>,
+    pub symbols: Vec<GraphSymbol>,
+    pub edges: Vec<CallEdge>,
+    pub var_types: Vec<(usize, usize, String, String)>,
+    pub hierarchy: Vec<ClassInfo>,
+    pub imports: Vec<(usize, String, String, String)>,
+    pub namespaces: Vec<(usize, String, String)>,
+}
+
+/// Identity of one scanned file inside a snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphFileMeta {
+    pub path: PathBuf,
+    pub hash: String,
+}
+
+impl GraphSnapshot {
+    /// Whether every hashable file in `files` (path + hash) matches this
+    /// snapshot, and the snapshot has no extra files. Files without a hash
+    /// (read errors, oversized) do not constrain the match — they cannot be
+    /// represented in the snapshot and must not force a rebuild every scan.
+    pub fn matches(&self, files: &[(&Path, Option<&str>)]) -> bool {
+        let known: HashMap<String, &str> = self
+            .files
+            .iter()
+            .map(|file| (file.path.to_string_lossy().into_owned(), file.hash.as_str()))
+            .collect();
+        let mut matched = 0usize;
+        for (path, hash) in files {
+            let Some(hash) = hash else { continue };
+            let key = path.to_string_lossy().into_owned();
+            match known.get(&key) {
+                Some(known_hash) if *known_hash == *hash => matched += 1,
+                _ => return false,
+            }
+        }
+        matched == known.len()
+    }
+}
+
+impl CodeGraph {
+    /// Restores a graph from a snapshot: symbols/edges are taken as-is; file
+    /// trees are not loaded and are re-parsed on demand by the taint engine.
+    pub fn from_snapshot(snapshot: &GraphSnapshot) -> Self {
+        let placeholder = SyntaxTree::placeholder();
+        let files = snapshot
+            .files
+            .iter()
+            .map(|file| IndexedFile {
+                path: file.path.clone(),
+                language: Language::from_path(&file.path),
+                tree: placeholder.clone(),
+                source: String::new(),
+            })
+            .collect();
+        let mut graph = Self {
+            files,
+            symbols: snapshot.symbols.clone(),
+            edges: snapshot.edges.clone(),
+            var_types: snapshot.var_types.clone(),
+            hierarchy: snapshot.hierarchy.clone(),
+            imports: snapshot.imports.clone(),
+            namespaces: snapshot.namespaces.clone(),
+            name_locations: HashMap::new(),
+            resolved_by_file_name: HashMap::new(),
+            file_index_by_path: HashMap::new(),
+            lazy_files: Some(LazyFiles::new(&snapshot.files)),
+        };
+        graph.finalize_indices();
+        graph
+    }
+
+    /// The serializable index data with the scan's file identities attached
+    /// (`schema` is set by the cache, which owns the namespace).
+    pub fn snapshot_with(&self, files: Vec<GraphFileMeta>) -> GraphSnapshot {
+        GraphSnapshot {
+            schema: String::new(),
+            files,
+            symbols: self.symbols.clone(),
+            edges: self.edges.clone(),
+            var_types: self.var_types.clone(),
+            hierarchy: self.hierarchy.clone(),
+            imports: self.imports.clone(),
+            namespaces: self.namespaces.clone(),
+        }
+    }
+}
+
+/// Immutable snapshot of the index used during edge resolution, plus the
+/// lookup tables that turn the O(E × symbols) scans into O(1) probes.
 struct ResolveCtx<'a> {
     symbols: Vec<GraphSymbol>,
     files: &'a [IndexedFile],
-    var_types: Vec<(usize, usize, String, String)>,
+    /// simple symbol name -> symbol indices (in symbol order)
+    symbols_by_name: HashMap<String, Vec<usize>>,
+    /// qualified name -> first symbol index
+    qualified_index: HashMap<String, usize>,
+    /// file -> symbol indices
+    symbols_by_file: HashMap<PathBuf, Vec<usize>>,
+    /// (file index, local name) -> (imported path, original name)
+    imports_by_file_local: HashMap<(usize, String), (String, String)>,
+    /// (file index, namespace) -> imported path
+    namespaces_by_file: HashMap<(usize, String), String>,
+    /// (file index, variable) -> [(declaration line, declared type)]
+    var_types_by_file_var: HashMap<(usize, String), Vec<(usize, String)>>,
     hierarchy: Vec<ClassInfo>,
-    imports: Vec<(usize, String, String, String)>,
-    namespaces: Vec<(usize, String, String)>,
+    /// class name -> hierarchy indices
+    hierarchy_by_name: HashMap<String, Vec<usize>>,
+    /// interface name -> hierarchy indices of implementing classes
+    implements_by_name: HashMap<String, Vec<usize>>,
+    file_paths: HashSet<PathBuf>,
+    /// parent directory -> paths (for import stem fallback)
+    files_by_parent: HashMap<PathBuf, Vec<PathBuf>>,
 }
 
 fn resolve_edge(edge: &mut CallEdge, ctx: &ResolveCtx<'_>) {
@@ -458,36 +760,33 @@ fn resolve_edge(edge: &mut CallEdge, ctx: &ResolveCtx<'_>) {
     // 1) Import-guided: `deleteUser(x)` with
     //    `import { deleteUser } from "./UserService"`.
     if !edge.callee_text.contains('.') {
-        let mut resolved = None;
-        for (file, local, path, original) in &ctx.imports {
-            if *file == caller_file_index && local == &edge.callee_text {
-                if let Some(target_path) = resolve_import_target(ctx, &caller_file, path) {
-                    // The imported symbol keeps its original name when
-                    // aliased (`helper as h` binds the local `h`).
-                    resolved = symbol_in_file(ctx, target_path, original)
-                        .or_else(|| symbol_in_file(ctx, target_path, &edge.callee_text));
+        if let Some((path, original)) = ctx
+            .imports_by_file_local
+            .get(&(caller_file_index, edge.callee_text.clone()))
+        {
+            if let Some(target_path) = resolve_import_target(ctx, &caller_file, path) {
+                // The imported symbol keeps its original name when
+                // aliased (`helper as h` binds the local `h`).
+                if let Some(index) = symbol_in_file(ctx, target_path, original)
+                    .or_else(|| symbol_in_file(ctx, target_path, &edge.callee_text))
+                {
+                    edge.callee = Some(index);
+                    return;
                 }
-                break;
             }
-        }
-        if let Some(index) = resolved {
-            edge.callee = Some(index);
-            return;
         }
     }
     // 2) Namespace-guided: `ns.method(...)` with `import * as ns`.
     if let Some((namespace, method)) = edge.callee_text.split_once('.') {
-        let mut target = None;
-        for (file, ns, path) in &ctx.namespaces {
-            if *file == caller_file_index && ns == namespace {
-                target = resolve_import_target(ctx, &caller_file, path);
-                break;
-            }
-        }
-        if let Some(target_path) = target {
-            if let Some(index) = symbol_in_file(ctx, target_path, method) {
-                edge.callee = Some(index);
-                return;
+        if let Some(path) = ctx
+            .namespaces_by_file
+            .get(&(caller_file_index, namespace.to_string()))
+        {
+            if let Some(target_path) = resolve_import_target(ctx, &caller_file, path) {
+                if let Some(index) = symbol_in_file(ctx, target_path, method) {
+                    edge.callee = Some(index);
+                    return;
+                }
             }
         }
     }
@@ -496,12 +795,16 @@ fn resolve_edge(edge: &mut CallEdge, ctx: &ResolveCtx<'_>) {
     //    methods, then implementations of an interface-typed variable.
     if let Some((var, method)) = edge.callee_text.split_once('.') {
         let mut resolved = None;
-        for (file, line, variable, ty) in &ctx.var_types {
-            if *file == caller_file_index && (*line == caller_line || *line == 0) && variable == var
-            {
-                resolved = resolve_typed(ctx, ty, method, caller_file_index);
-                if resolved.is_some() {
-                    break;
+        if let Some(typed) = ctx
+            .var_types_by_file_var
+            .get(&(caller_file_index, var.to_string()))
+        {
+            for (line, ty) in typed {
+                if *line == caller_line || *line == 0 {
+                    resolved = resolve_typed(ctx, ty, method, caller_file_index);
+                    if resolved.is_some() {
+                        break;
+                    }
                 }
             }
         }
@@ -510,7 +813,10 @@ fn resolve_edge(edge: &mut CallEdge, ctx: &ResolveCtx<'_>) {
             return;
         }
     }
-    // 4) Fallback: qualified-name and simple-name matching.
+    // 4) Fallback: qualified-name and simple-name matching. A symbol can only
+    //    match when its simple name is the callee's last segment, so the scan
+    //    is bounded to that candidate set (same-file preferred, in symbol
+    //    order — identical semantics to a full scan).
     let simple = edge
         .callee_text
         .rsplit('.')
@@ -518,21 +824,27 @@ fn resolve_edge(edge: &mut CallEdge, ctx: &ResolveCtx<'_>) {
         .unwrap_or(&edge.callee_text);
     let mut same_file = None;
     let mut any = None;
-    for (index, symbol) in ctx.symbols.iter().enumerate() {
-        let matches = symbol.qualified_name == edge.callee_text
-            || symbol.name == edge.callee_text
-            || symbol
-                .qualified_name
-                .ends_with(&format!(".{}", edge.callee_text))
-            || symbol.name == simple;
-        if !matches {
-            continue;
-        }
-        if same_file.is_none() && symbol.file == caller_file {
-            same_file = Some(index);
-        }
-        if any.is_none() {
-            any = Some(index);
+    if let Some(candidates) = ctx.symbols_by_name.get(simple) {
+        for &index in candidates {
+            let symbol = &ctx.symbols[index];
+            // `name == simple` deliberately matches every candidate: the
+            // fallback resolves by the callee's last segment (loose by design,
+            // same-file preferred), matching the pre-index behavior.
+            let matches = symbol.qualified_name == edge.callee_text
+                || symbol.name == edge.callee_text
+                || symbol
+                    .qualified_name
+                    .ends_with(&format!(".{}", edge.callee_text))
+                || symbol.name == *simple;
+            if !matches {
+                continue;
+            }
+            if same_file.is_none() && symbol.file == caller_file {
+                same_file = Some(index);
+            }
+            if any.is_none() {
+                any = Some(index);
+            }
         }
     }
     edge.callee = same_file.or(any);
@@ -548,9 +860,9 @@ fn resolve_typed(
     caller_file: usize,
 ) -> Option<usize> {
     let exact = |name: &str| {
-        ctx.symbols
-            .iter()
-            .position(|symbol| symbol.qualified_name == format!("{}.{}", name, method))
+        ctx.qualified_index
+            .get(&format!("{}.{}", name, method))
+            .copied()
     };
     if let Some(index) = exact(ty) {
         // An interface/abstract declaration has no body; prefer a concrete
@@ -565,15 +877,17 @@ fn resolve_typed(
         if !visited.insert(class.clone()) {
             break;
         }
-        let info = ctx.hierarchy.iter().find(|info| {
-            info.name == class
-                && (info.file_index == caller_file
-                    || !ctx
-                        .hierarchy
+        let info = ctx.hierarchy_by_name.get(&class).and_then(|indices| {
+            indices.iter().find(|&&info_index| {
+                let info = &ctx.hierarchy[info_index];
+                info.file_index == caller_file
+                    || !indices
                         .iter()
-                        .any(|other| other.name == class && other.file_index == caller_file))
+                        .any(|&other| ctx.hierarchy[other].file_index == caller_file)
+            })
         });
-        let Some(info) = info else { break };
+        let Some(&info_index) = info else { break };
+        let info = &ctx.hierarchy[info_index];
         if let Some(superclass) = &info.extends {
             if let Some(index) = exact(superclass) {
                 return Some(index);
@@ -603,16 +917,12 @@ fn find_implementation(
     if !visited.insert(interface.to_string()) {
         return None; // cyclic hierarchy guard
     }
-    for info in &ctx.hierarchy {
-        // Only `implements` binds an interface; the superclass path is
-        // explored below for classes that inherit the implementation.
-        if !info.implements.iter().any(|i| i == interface) {
-            continue;
-        }
+    for &info_index in ctx.implements_by_name.get(interface).into_iter().flatten() {
+        let info = &ctx.hierarchy[info_index];
         let direct = ctx
-            .symbols
-            .iter()
-            .position(|symbol| symbol.qualified_name == format!("{}.{}", info.name, method));
+            .qualified_index
+            .get(&format!("{}.{}", info.name, method))
+            .copied();
         if direct.is_some() {
             return direct;
         }
@@ -632,7 +942,7 @@ fn symbol_has_body(ctx: &ResolveCtx<'_>, index: usize) -> bool {
     let Some(file) = ctx.files.get(symbol.file_index) else {
         return false;
     };
-    let Some(node) = file.method_node_at(symbol.line) else {
+    let Some(node) = file.method_node_at_byte(symbol.start_byte) else {
         return false;
     };
     node.children()
@@ -643,14 +953,15 @@ fn symbol_has_body(ctx: &ResolveCtx<'_>, index: usize) -> bool {
 /// qualified form `Class.name` when the class is visible).
 fn symbol_in_file(ctx: &ResolveCtx<'_>, path: &Path, name: &str) -> Option<usize> {
     let suffix = format!(".{}", name);
-    ctx.symbols
-        .iter()
-        .enumerate()
-        .find(|(_, symbol)| {
-            symbol.file == *path
-                && (symbol.name == name || symbol.qualified_name.ends_with(&suffix))
+    ctx.symbols_by_file
+        .get(path)
+        .into_iter()
+        .flatten()
+        .copied()
+        .find(|&index| {
+            let symbol = &ctx.symbols[index];
+            symbol.name == name || symbol.qualified_name.ends_with(&suffix)
         })
-        .map(|(index, _)| index)
 }
 
 /// Maps an import path to a scanned file: exact relative path with common
@@ -674,12 +985,7 @@ fn resolve_import_target<'a>(
     }
     for candidate in candidates {
         let full = parent.join(candidate);
-        if let Some(path) = ctx
-            .files
-            .iter()
-            .map(|file| &file.path)
-            .find(|path| **path == full)
-        {
+        if let Some(path) = ctx.file_paths.get(&full) {
             return Some(path);
         }
     }
@@ -687,12 +993,14 @@ fn resolve_import_target<'a>(
         .file_stem()?
         .to_string_lossy()
         .to_string();
-    ctx.files.iter().map(|file| &file.path).find(|path| {
-        path.parent() == Some(parent)
-            && path
-                .file_stem()
+    ctx.files_by_parent
+        .get(parent)
+        .into_iter()
+        .flatten()
+        .find(|path| {
+            path.file_stem()
                 .is_some_and(|candidate| candidate == stem.as_str())
-    })
+        })
 }
 
 /// Structural summary of the architecture index.
@@ -711,29 +1019,39 @@ pub struct GraphMetrics {
 }
 
 /// Longest acyclic path out of `node` (memoized; back-edges contribute 0).
-/// `active` marks the current DFS path so cycles terminate instead of
-/// recursing forever.
-fn longest_chain(
-    node: usize,
-    adjacency: &[Vec<usize>],
-    memo: &mut Vec<Option<usize>>,
-    active: &mut [bool],
-) -> usize {
-    if let Some(known) = memo[node] {
-        return known;
+/// Iterative DFS with an explicit stack: recursion depth is bounded by the
+/// symbol count, so pathological call chains cannot overflow the stack.
+fn longest_chain(node: usize, adjacency: &[Vec<usize>], memo: &mut [Option<usize>]) -> usize {
+    enum Frame {
+        Enter(usize),
+        Exit(usize),
     }
-    if active[node] {
-        return 0; // back-edge: not part of an acyclic chain
+    let mut active = vec![false; memo.len()];
+    let mut stack = vec![Frame::Enter(node)];
+    while let Some(frame) = stack.pop() {
+        match frame {
+            Frame::Enter(current) => {
+                if memo[current].is_some() || active[current] {
+                    continue; // known, or a back-edge (contributes 0 via the missing memo)
+                }
+                active[current] = true;
+                stack.push(Frame::Exit(current));
+                for &next in adjacency[current].iter().rev() {
+                    stack.push(Frame::Enter(next));
+                }
+            }
+            Frame::Exit(current) => {
+                active[current] = false;
+                let best = adjacency[current]
+                    .iter()
+                    .map(|&next| 1 + memo[next].unwrap_or(0))
+                    .max()
+                    .unwrap_or(0);
+                memo[current] = Some(best);
+            }
+        }
     }
-    active[node] = true;
-    let best = adjacency[node]
-        .iter()
-        .map(|next| 1 + longest_chain(*next, adjacency, memo, active))
-        .max()
-        .unwrap_or(0);
-    active[node] = false;
-    memo[node] = Some(best);
-    best
+    memo[node].unwrap_or(0)
 }
 
 impl GraphSymbol {
@@ -779,6 +1097,7 @@ fn collect_symbols(
                     file: file.path.clone(),
                     file_index,
                     line,
+                    start_byte: node.start_byte(),
                     language: file.language,
                 });
             }
@@ -1534,5 +1853,145 @@ def view():
         assert!(mermaid.contains("n0 --> n1"));
         let json = graph.to_json();
         assert!(json.contains("\"qualified_name\":\"A.run\""));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_symbols_edges_and_resolution() {
+        let files = vec![
+            indexed(
+                "Controller.java",
+                Language::Java,
+                r#"
+class Controller {
+    void handle(UserService service) {
+        service.deleteUser("x");
+    }
+}
+"#,
+            ),
+            indexed(
+                "UserService.java",
+                Language::Java,
+                r#"
+class UserService {
+    void deleteUser(String id) {}
+}
+"#,
+            ),
+        ];
+        let graph = CodeGraph::build(files);
+        let snapshot = GraphSnapshot {
+            schema: "test".into(),
+            files: vec![
+                GraphFileMeta {
+                    path: PathBuf::from("Controller.java"),
+                    hash: "h1".into(),
+                },
+                GraphFileMeta {
+                    path: PathBuf::from("UserService.java"),
+                    hash: "h2".into(),
+                },
+            ],
+            symbols: graph.symbols.clone(),
+            edges: graph.edges.clone(),
+            var_types: graph.var_types.clone(),
+            hierarchy: graph.hierarchy.clone(),
+            imports: graph.imports.clone(),
+            namespaces: graph.namespaces.clone(),
+        };
+
+        assert!(snapshot.matches(&[
+            (Path::new("Controller.java"), Some("h1")),
+            (Path::new("UserService.java"), Some("h2")),
+        ]));
+        assert!(!snapshot.matches(&[
+            (Path::new("Controller.java"), Some("h1")),
+            (Path::new("UserService.java"), Some("h2-changed")),
+        ]));
+        assert!(!snapshot.matches(&[(Path::new("Controller.java"), Some("h1"))]));
+
+        let restored = CodeGraph::from_snapshot(&snapshot);
+        assert_eq!(restored.symbols.len(), graph.symbols.len());
+        assert_eq!(restored.edges.len(), graph.edges.len());
+        assert_eq!(
+            restored.resolved_callees_for_file(Path::new("Controller.java"), "deleteUser"),
+            graph.resolved_callees_for_file(Path::new("Controller.java"), "deleteUser"),
+        );
+        assert_eq!(
+            restored.symbol_locations("deleteUser"),
+            graph.symbol_locations("deleteUser")
+        );
+        // Placeholder files exist for display, but carry no tree.
+        assert_eq!(restored.files.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_restore_reparses_callees_on_demand() {
+        // Lazy parse: the restored graph has no trees; requesting a callee
+        // body reads the file from disk and parses it on first use.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hawk-graph-lazy-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let controller = dir.join("Controller.java");
+        let service = dir.join("UserService.java");
+        std::fs::write(
+            &controller,
+            "class Controller { void handle(UserService s) { s.deleteUser(); } }",
+        )
+        .unwrap();
+        std::fs::write(&service, "class UserService { void deleteUser() {} }").unwrap();
+
+        let graph = CodeGraph::build(vec![
+            indexed(
+                controller.to_str().unwrap(),
+                Language::Java,
+                "class Controller { void handle(UserService s) { s.deleteUser(); } }",
+            ),
+            indexed(
+                service.to_str().unwrap(),
+                Language::Java,
+                "class UserService { void deleteUser() {} }",
+            ),
+        ]);
+        let snapshot = GraphSnapshot {
+            schema: "test".into(),
+            files: vec![
+                GraphFileMeta {
+                    path: controller.clone(),
+                    hash: "h1".into(),
+                },
+                GraphFileMeta {
+                    path: service.clone(),
+                    hash: "h2".into(),
+                },
+            ],
+            symbols: graph.symbols.clone(),
+            edges: graph.edges.clone(),
+            var_types: graph.var_types.clone(),
+            hierarchy: graph.hierarchy.clone(),
+            imports: graph.imports.clone(),
+            namespaces: graph.namespaces.clone(),
+        };
+        let restored = CodeGraph::from_snapshot(&snapshot);
+
+        let delete_user = restored
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "deleteUser")
+            .expect("deleteUser symbol");
+        let file = restored
+            .indexed_file(delete_user.file_index)
+            .expect("lazy parse must load the file");
+        assert_eq!(file.path, service);
+        assert!(
+            file.method_node_at_byte(delete_user.start_byte).is_some(),
+            "callee must be re-located from the lazily parsed tree"
+        );
+        assert!(restored.indexed_file(99).is_none(), "out-of-range index");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -53,17 +53,56 @@ impl Scanner {
     pub fn scan_targets(&self, targets: &[ScanTarget]) -> Result<ScanResult, ScanError> {
         let files =
             discover_with_excludes(targets, &self.excludes).map_err(ScanError::Discovery)?;
-        // Phase 1: read, cache-check, and parse every file in parallel. Trees
-        // are kept even for cache hits — the architecture index in phase 2
-        // needs every file's symbols for cross-file analysis.
-        let parsed: Vec<ParsedFile> = files
+        // Phase 1: hash + cache-check every file in parallel. Cache hits (files
+        // unchanged since the last scan) are not read or parsed here; cache
+        // misses are read and parsed for the rule phase.
+        let mut parsed: Vec<ParsedFile> = files
             .par_iter()
-            .map(|file| Scanner::parse_one(&self.parsers, &self.cache, file.path()))
+            .map(|file| Scanner::prepare_one(&self.parsers, &self.cache, file.path()))
             .collect();
         // Phase 2: project-wide architecture index (symbols + call edges).
-        let graph = crate::code_graph::CodeGraph::build(
-            parsed.iter().filter_map(ParsedFile::indexed).collect(),
-        );
+        // When every file's hash matches the persisted snapshot, the graph is
+        // restored without parsing or re-indexing; otherwise the snapshot is
+        // rebuilt from the parsed trees (cache-hit files are parsed here —
+        // the graph needs every file's symbols for cross-file analysis).
+        let snapshot = self
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.load_graph_snapshot());
+        let graph = if snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.matches(
+                &parsed
+                    .iter()
+                    .map(|file| (file.path.as_path(), file.source_hash.as_deref()))
+                    .collect::<Vec<_>>(),
+            )
+        }) {
+            crate::code_graph::CodeGraph::from_snapshot(snapshot.as_ref().expect("checked above"))
+        } else {
+            parsed.par_iter_mut().for_each(|file| {
+                if file.tree.is_none() && !file.skipped && file.issues.is_empty() {
+                    Scanner::parse_tree(&self.parsers, file);
+                }
+            });
+            let graph = crate::code_graph::CodeGraph::build(
+                parsed.iter().filter_map(ParsedFile::indexed).collect(),
+            );
+            if let Some(cache) = &self.cache {
+                let files = parsed
+                    .iter()
+                    .filter_map(|file| {
+                        file.source_hash
+                            .as_ref()
+                            .map(|hash| crate::code_graph::GraphFileMeta {
+                                path: file.path.clone(),
+                                hash: hash.clone(),
+                            })
+                    })
+                    .collect();
+                let _ = cache.save_graph_snapshot(graph.snapshot_with(files));
+            }
+            graph
+        };
         // Phase 3: run rules per file with cross-file callee resolution
         // (parallel; the graph is read-only and shared).
         let per_file: Vec<ScanResult> = parsed
@@ -99,10 +138,13 @@ impl Scanner {
         self.packs.count() > 0
     }
 
-    /// Phase 1: reads and parses one file, preserving the cache fast path and
-    /// the per-file issue/skip accounting. Parsing happens even on cache hits
-    /// so the architecture index covers the whole scan scope.
-    fn parse_one(
+    /// Phase 1a: hashes the file and checks the findings cache. Cache hits
+    /// (unchanged files) return without reading or parsing the source; cache
+    /// misses are read and parsed immediately. The hash is kept so the graph
+    /// snapshot can be matched/rebuilt without a second read. Files with an
+    /// unsupported language are skipped without reading their content (a
+    /// binary file must never surface a read error or degrade the scan).
+    fn prepare_one(
         parsers: &ParserRegistry,
         cache: &Option<cache::Cache>,
         path: &Path,
@@ -115,6 +157,7 @@ impl Scanner {
             cached_findings: Vec::new(),
             cache_hit: false,
             skipped: false,
+            source_hash: None,
             issues: Vec::new(),
         };
 
@@ -135,39 +178,63 @@ impl Scanner {
             }
         }
 
+        let language = Language::from_path(path);
+        file.language = language;
+        if parsers.parser_for(language).is_none() {
+            // Unsupported extension: skipped, but hashed so the graph snapshot
+            // can still be matched (identity is per file, not per language).
+            if cache.is_some() {
+                file.source_hash = cache::source_hash_of_file(path).ok();
+            }
+            file.skipped = true;
+            return file;
+        }
+
         // Cache fast path: unchanged files reuse previous findings.
         if let Some(cache) = cache {
             if let Ok(hash) = cache::source_hash_of_file(path) {
+                file.source_hash = Some(hash.clone());
                 if let Some(cached) = cache.get(path, &hash) {
                     file.cached_findings = cached;
                     file.cache_hit = true;
+                    return file;
                 }
             }
         }
 
-        let source = match fs::read_to_string(path) {
+        Scanner::parse_tree_into(parsers, &mut file);
+        file
+    }
+
+    /// Phase 1b: parses a prepared file whose source is not loaded yet (cache
+    /// hits that the graph needs, when the snapshot does not match).
+    fn parse_tree(parsers: &ParserRegistry, file: &mut ParsedFile) {
+        Scanner::parse_tree_into(parsers, file);
+    }
+
+    fn parse_tree_into(parsers: &ParserRegistry, file: &mut ParsedFile) {
+        let source = match fs::read_to_string(&file.path) {
             Ok(source) => source,
             Err(source) => {
                 file.issues.push((FileIssueKind::Read, source.to_string()));
-                return file;
+                return;
             }
         };
-        let language = Language::from_path(path);
+        let language = Language::from_path(&file.path);
         let Some(parser) = parsers.parser_for(language) else {
             file.skipped = true;
-            return file;
+            return;
         };
         let tree = match parser.parse(&source) {
             Ok(tree) => tree,
             Err(source) => {
                 file.issues.push((FileIssueKind::Parse, source.to_string()));
-                return file;
+                return;
             }
         };
         file.language = language;
         file.source = Some(source);
         file.tree = Some(tree);
-        file
     }
 
     /// Phase 3: runs the loaded rules against one parsed file. Cached files
@@ -229,7 +296,9 @@ impl Scanner {
         }
 
         if let Some(cache) = cache {
-            if let Ok(hash) = cache::source_hash_of_file(&file.path) {
+            // Reuse the phase-1 hash; if the file changed mid-scan the entry
+            // simply misses on the next scan and is re-analyzed.
+            if let Some(hash) = file.source_hash.clone() {
                 let mut findings = Findings::new();
                 for f in scanned {
                     findings.push(f);
@@ -250,6 +319,9 @@ struct ParsedFile {
     cached_findings: Vec<crate::finding::Finding>,
     cache_hit: bool,
     skipped: bool,
+    /// Content hash computed in phase 1; drives both the findings cache and
+    /// the graph-snapshot match.
+    source_hash: Option<String>,
     issues: Vec<(FileIssueKind, String)>,
 }
 
@@ -448,5 +520,99 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ScanError::Scope(_)));
+    }
+
+    #[test]
+    fn unchanged_scan_restores_the_graph_snapshot() {
+        let temp = TempDir::new();
+        let cache_dir = temp.0.join("cache");
+        let path = temp.write(
+            "Example.java",
+            "class Example { void run(String input) { Runtime.getRuntime().exec(input); } }",
+        );
+        let scanner = || Scanner::built_in().unwrap().with_cache(cache_dir.clone());
+
+        // First scan: full build, snapshot persisted.
+        let first = scanner().scan_paths(&[path.as_path()]).unwrap();
+        assert_eq!(first.findings.len(), 1);
+        let snapshot_files: Vec<_> = fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("graph."))
+            .collect();
+        assert_eq!(snapshot_files.len(), 1, "snapshot must be persisted");
+
+        // Second scan: every hash matches, so the graph is restored and the
+        // findings are replayed from the per-file cache.
+        let second = scanner().scan_paths(&[path.as_path()]).unwrap();
+        assert_eq!(second.findings.len(), 1, "replayed findings must match");
+        assert_eq!(
+            second.findings.iter().next().unwrap().rule_id,
+            first.findings.iter().next().unwrap().rule_id
+        );
+
+        // A content change invalidates the snapshot and re-analyzes.
+        temp.write(
+            "Example.java",
+            "class Example { void run(String input) { String safe = \"ok\"; } }",
+        );
+        let third = scanner().scan_paths(&[path.as_path()]).unwrap();
+        assert_eq!(
+            third.findings.len(),
+            0,
+            "changed content must be re-analyzed against a rebuilt graph"
+        );
+    }
+
+    #[test]
+    fn restored_snapshot_analyzes_cache_misses_via_lazy_parse() {
+        // The findings cache is cleared but the snapshot survives: files are
+        // cache misses, so they are analyzed against the restored graph,
+        // whose trees are re-parsed on demand (cross-file callee resolution
+        // must still work and must not crash).
+        let temp = TempDir::new();
+        let cache_dir = temp.0.join("cache");
+        let controller = temp.write(
+            "Controller.java",
+            r#"
+class Controller {
+    void handle(UserService service, java.sql.Statement st, javax.servlet.http.HttpServletRequest req) {
+        service.deleteUser(req.getParameter("id"), st);
+    }
+}
+"#,
+        );
+        let service = temp.write(
+            "UserService.java",
+            r#"
+class UserService {
+    void deleteUser(String userId, java.sql.Statement st) {
+        st.executeQuery("DELETE FROM users WHERE id='" + userId + "'");
+    }
+}
+"#,
+        );
+        let scanner = || Scanner::built_in().unwrap().with_cache(cache_dir.clone());
+
+        let first = scanner()
+            .scan_paths(&[controller.as_path(), service.as_path()])
+            .unwrap();
+        assert_eq!(first.findings.len(), 1, "cross-file flow detected");
+
+        // Wipe only the per-file findings cache.
+        for entry in fs::read_dir(&cache_dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("graph.") {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+        let second = scanner()
+            .scan_paths(&[controller.as_path(), service.as_path()])
+            .unwrap();
+        assert_eq!(
+            second.findings.len(),
+            1,
+            "restored graph must re-resolve cross-file callees via lazy parse"
+        );
     }
 }

@@ -207,8 +207,10 @@ The engine should own data-flow algorithms; Rule Packs should declare security s
 
 - [x] File hashing.
 - [x] Local cache.
-- [ ] AST cache.
+- [x] AST cache.
 - [x] Incremental analysis.
+- [x] Architecture-graph snapshot (unchanged scans skip parsing and graph
+      rebuild entirely; callee bodies are re-parsed on demand).
 - [x] `hawk --changed`.
 - [x] `hawk --staged`.
 - [ ] Git-aware baseline.

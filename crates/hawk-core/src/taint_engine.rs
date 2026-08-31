@@ -48,15 +48,33 @@ pub fn analyze_with_graph(
     state.walk(tree.root());
     // Nested sink calls (e.g. an outer router.get(...) whose arrow-function
     // argument contains an inner insertAdjacentHTML(...)) would both match the
-    // sink text. Keep only the innermost finding for overlapping spans.
-    let findings = state.findings.clone();
-    state.findings.retain(|finding| {
-        !findings.iter().any(|other| {
-            other.start_byte >= finding.start_byte
-                && other.end_byte <= finding.end_byte
-                && (other.start_byte != finding.start_byte || other.end_byte != finding.end_byte)
-        })
-    });
+    // sink text. Keep only the innermost finding for overlapping spans —
+    // a backward sweep over span-sorted findings instead of the previous
+    // O(F²) pairwise containment check. Identical spans are all kept.
+    state
+        .findings
+        .sort_by_key(|f| (f.start_byte, std::cmp::Reverse(f.end_byte)));
+    let mut keep = vec![true; state.findings.len()];
+    let mut min_end = usize::MAX;
+    let mut max_start_by_end: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for i in (0..state.findings.len()).rev() {
+        let (start, end) = (state.findings[i].start_byte, state.findings[i].end_byte);
+        // A later finding (start >= ours, so it sorts after us) with a strictly
+        // smaller end — or the same end but a strictly later start — drops us.
+        let contained = min_end < end
+            || max_start_by_end
+                .get(&end)
+                .is_some_and(|&other_start| other_start > start);
+        min_end = min_end.min(end);
+        max_start_by_end
+            .entry(end)
+            .and_modify(|other_start| *other_start = (*other_start).max(start))
+            .or_insert(start);
+        keep[i] = !contained;
+    }
+    let mut keep = keep.into_iter();
+    state.findings.retain(|_| keep.next().unwrap());
     state.findings
 }
 
@@ -140,9 +158,10 @@ struct State<'a> {
     graph: Option<&'a CodeGraph>,
     /// The analyzed file's path, for reusing graph edge resolution.
     path: Option<&'a std::path::Path>,
-    /// callee name → declaration lines per file, from the graph's symbols.
-    name_locations: HashMap<String, Vec<(usize, usize)>>,
-    /// (file index, line) → re-located callee node, memoized per analysis.
+    /// callee name → declaration (file index, start byte), shared from the
+    /// graph's prebuilt index.
+    name_locations: Option<&'a HashMap<String, Vec<(usize, usize)>>>,
+    /// (file index, start byte) → re-located callee node, memoized per analysis.
     node_cache: HashMap<(usize, usize), Option<AstNode<'a>>>,
     tainted: HashSet<String>,
     /// Variables assigned since the current branch/loop scope began. Used by
@@ -162,22 +181,15 @@ impl<'a> State<'a> {
         graph: Option<&'a CodeGraph>,
         path: Option<&'a std::path::Path>,
     ) -> Self {
-        let mut name_locations: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        if let Some(graph) = graph {
-            for symbol in &graph.symbols {
-                name_locations
-                    .entry(symbol.name.clone())
-                    .or_default()
-                    .push((symbol.file_index, symbol.line));
-            }
-        }
         Self {
             source,
             config,
             language,
             graph,
             path,
-            name_locations,
+            // The graph's prebuilt symbol index (one per scan, shared by every
+            // rule/file analysis instead of rebuilt per State).
+            name_locations: graph.map(CodeGraph::name_locations),
             node_cache: HashMap::new(),
             tainted: HashSet::new(),
             touched: HashSet::new(),
@@ -214,52 +226,39 @@ impl<'a> State<'a> {
     }
 
     /// All definitions of `name`: same-file functions first, then cross-file
-    /// definitions from the code graph (re-located by symbol line).
+    /// definitions from the code graph (re-located by declaration byte).
     fn resolve_callees(&mut self, name: &str) -> Vec<Callee<'a>> {
         let mut out = Vec::new();
         if let Some(same_file) = self.methods.get(name) {
             out.extend(same_file.iter().copied());
         }
         if let Some(graph) = self.graph {
+            let mut push_graph_callees = |state: &mut Self, locations: Vec<(usize, usize)>| {
+                for (file_index, byte) in locations {
+                    let Some(file) = graph.indexed_file(file_index) else {
+                        continue;
+                    };
+                    let key = (file_index, byte);
+                    let node = match state.node_cache.get(&key) {
+                        Some(cached) => *cached,
+                        None => {
+                            let found = file.method_node_at_byte(byte);
+                            state.node_cache.insert(key, found);
+                            found
+                        }
+                    };
+                    if let Some(node) = node {
+                        out.push((node, &file.source));
+                    }
+                }
+            };
             // Reuse the graph's precise edge resolution (import/type/hierarchy
             // aware) for calls in the analyzed file, when its path is known.
             if let Some(path) = self.path {
-                for (file_index, line) in graph.resolved_callees_for_file(path, name) {
-                    let Some(file) = graph.files.get(file_index) else {
-                        continue;
-                    };
-                    let key = (file_index, line);
-                    let node = match self.node_cache.get(&key) {
-                        Some(cached) => *cached,
-                        None => {
-                            let found = file.method_node_at(line);
-                            self.node_cache.insert(key, found);
-                            found
-                        }
-                    };
-                    if let Some(node) = node {
-                        out.push((node, &file.source));
-                    }
-                }
+                push_graph_callees(self, graph.resolved_callees_for_file(path, name));
             }
-            if let Some(locations) = self.name_locations.get(name).cloned() {
-                for (file_index, line) in locations {
-                    let Some(file) = graph.files.get(file_index) else {
-                        continue;
-                    };
-                    let key = (file_index, line);
-                    let node = match self.node_cache.get(&key) {
-                        Some(cached) => *cached,
-                        None => {
-                            let found = file.method_node_at(line);
-                            self.node_cache.insert(key, found);
-                            found
-                        }
-                    };
-                    if let Some(node) = node {
-                        out.push((node, &file.source));
-                    }
-                }
+            if let Some(locations) = self.name_locations.and_then(|map| map.get(name).cloned()) {
+                push_graph_callees(self, locations);
             }
         }
         // The current file may also appear in the graph; drop duplicate nodes.
@@ -414,12 +413,7 @@ impl<'a> State<'a> {
         }
     }
 
-    fn handle_assignment(
-        &mut self,
-        node: AstNode<'_>,
-        source: &'a str,
-        chain: &mut Vec<String>,
-    ) {
+    fn handle_assignment(&mut self, node: AstNode<'_>, source: &'a str, chain: &mut Vec<String>) {
         let Some(left) = node
             .child_by_field_name("left")
             .and_then(|l| l.text(source))
@@ -844,6 +838,13 @@ pub(crate) fn line_text(source: &str, byte: usize) -> String {
 pub(crate) fn is_tainted_text(text: &str, tainted_vars: &HashSet<String>) -> bool {
     if tainted_vars.is_empty() {
         return false;
+    }
+    // Fast path: no string literals, nothing to strip (avoids the per-call
+    // allocation in the common identifier-only case).
+    if !text.contains(['"', '\'']) {
+        return tainted_vars
+            .iter()
+            .any(|var| contains_identifier(text, var));
     }
     let stripped = strip_string_literals(text);
     tainted_vars

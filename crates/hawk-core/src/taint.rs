@@ -865,7 +865,10 @@ class Cache {
             1,
             "recursive callee must terminate and not lose the real flow"
         );
-        assert_eq!(findings[0].sink, "st.executeQuery(\"SELECT * FROM t WHERE id='\" + get(id) + \"'\")");
+        assert_eq!(
+            findings[0].sink,
+            "st.executeQuery(\"SELECT * FROM t WHERE id='\" + get(id) + \"'\")"
+        );
     }
 
     #[test]

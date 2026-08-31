@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::scope::ScanTarget;
 
-const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[".git", "node_modules", "target", "build", "dist"];
+const DEFAULT_IGNORED_DIRECTORIES: &[&str] =
+    &[".git", ".hawk", "node_modules", "target", "build", "dist"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryError {
@@ -225,6 +226,7 @@ mod tests {
         temp.file("dist/bundle.js");
         temp.file("build/output.js");
         temp.file(".git/config");
+        temp.file(".hawk/cache/graph.bin");
 
         let files = discover(&[ScanTarget::Directory(temp.path.clone())])
             .expect("discovery should succeed");

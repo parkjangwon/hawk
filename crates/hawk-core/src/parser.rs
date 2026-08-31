@@ -17,6 +17,19 @@ impl SyntaxTree {
     pub(crate) fn raw_root_node(&self) -> tree_sitter::Node<'_> {
         self.tree.root_node()
     }
+
+    /// An empty tree used as a placeholder for files whose content is not
+    /// loaded (graphs restored from a snapshot). Never analyzed directly; the
+    /// graph re-parses such files on demand.
+    pub(crate) fn placeholder() -> Self {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_java::LANGUAGE))
+            .expect("java grammar must load");
+        Self {
+            tree: parser.parse("", None).expect("empty source parses"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
