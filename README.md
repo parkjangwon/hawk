@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/parkjangwon/hawk/main/scripts/insta
 Re-running the script updates hawk to the latest release. Options:
 
 - `HAWK_INSTALL_DIR=/custom/bin` — install directory (default `~/.local/bin`)
-- `HAWK_VERSION=v0.1.0` — pin a specific release instead of `latest`
+- `HAWK_VERSION=v0.3.0` — pin a specific release instead of `latest`
 
 Clean uninstall (binary + user data + `./.hawk` cache in the current
 directory):
@@ -75,6 +75,23 @@ hawk --changed           # working-tree changes vs the index
 hawk --staged            # staged changes
 hawk --fail-on-severity high .   # exit 2 only for HIGH+ findings (CI-friendly)
 hawk --format sarif -o report.sarif .
+hawk --format html -o report.html .
+```
+
+Reports list **every loaded rule category**, so a clean category reads
+"no findings" instead of silently disappearing — you can always tell that
+the scan ran and what it covered:
+
+```text
+2 findings in 144 file(s)
+27 file(s) skipped (0 issue(s) resolved by ignoring them
+
+Categories (24):
+  availability:                  3 rules, no findings
+  command-injection:             8 rules, no findings
+  sql-injection:                 5 rules, 1 finding
+  xss:                           7 rules, no findings
+  ...
 ```
 
 Rule tooling:
@@ -341,7 +358,10 @@ The report should include enough scan metadata to make the result auditable, inc
 
 Reports should be in **English** for broad reuse.
 
-A report should provide severity summaries, individual findings, locations, rule/CWE/OWASP mappings where available, code context, remediation guidance, and scan metadata.
+A report should provide severity summaries, **per-category coverage (every
+loaded category is listed, zero-finding categories explicitly marked "No
+findings")**, individual findings, locations, rule/CWE/OWASP mappings where
+available, code context, remediation guidance, and scan metadata.
 
 ## Baseline and Incremental Analysis
 
