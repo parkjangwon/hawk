@@ -204,6 +204,9 @@ pub struct SarifMessage {
 
 #[derive(Debug, serde::Serialize)]
 pub struct SarifResultItem {
+    /// SARIF 2.1.0 property is `ruleId` (camelCase); consumers such as
+    /// GitHub Code Scanning reject the snake_case form.
+    #[serde(rename = "ruleId")]
     pub rule_id: String,
     pub level: String,
     pub message: SarifMessage,
