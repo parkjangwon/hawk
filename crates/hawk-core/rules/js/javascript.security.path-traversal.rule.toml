@@ -1,0 +1,13 @@
+id = "javascript.security.path-traversal"
+name = "Path traversal in file system access"
+description = "Passing untrusted user input directly to fs module functions without path sanitization can expose arbitrary system files."
+recommendation = "Use path.resolve and ensure the target path starts with the trusted root directory; reject paths containing '..'."
+category = "path-traversal"
+severity = "high"
+confidence = "medium"
+languages = ["javascript", "typescript"]
+cwe = "CWE-22"
+owasp = "A01:2021"
+
+[pattern]
+regex = "fs\\.(readFile|readFileSync|createReadStream|unlink|writeFile)\\s*\\([^)]*(req\\.|request\\.|params|query)"

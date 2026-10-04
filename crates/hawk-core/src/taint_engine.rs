@@ -74,7 +74,7 @@ pub fn analyze_with_graph(
         keep[i] = !contained;
     }
     let mut keep = keep.into_iter();
-    state.findings.retain(|_| keep.next().unwrap());
+    state.findings.retain(|_| keep.next().unwrap_or(false));
     state.findings
 }
 

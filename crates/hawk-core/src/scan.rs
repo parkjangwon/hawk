@@ -69,39 +69,42 @@ impl Scanner {
             .cache
             .as_ref()
             .and_then(|cache| cache.load_graph_snapshot());
-        let graph = if snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.matches(
-                &parsed
-                    .iter()
-                    .map(|file| (file.path.as_path(), file.source_hash.as_deref()))
-                    .collect::<Vec<_>>(),
-            )
-        }) {
-            crate::code_graph::CodeGraph::from_snapshot(snapshot.as_ref().expect("checked above"))
-        } else {
-            parsed.par_iter_mut().for_each(|file| {
-                if file.tree.is_none() && !file.skipped && file.issues.is_empty() {
-                    Scanner::parse_tree(&self.parsers, file);
-                }
-            });
-            let graph = crate::code_graph::CodeGraph::build(
-                parsed.iter().filter_map(ParsedFile::indexed).collect(),
-            );
-            if let Some(cache) = &self.cache {
-                let files = parsed
-                    .iter()
-                    .filter_map(|file| {
-                        file.source_hash
-                            .as_ref()
-                            .map(|hash| crate::code_graph::GraphFileMeta {
-                                path: file.path.clone(),
-                                hash: hash.clone(),
-                            })
-                    })
-                    .collect();
-                let _ = cache.save_graph_snapshot(graph.snapshot_with(files));
+        let graph = match &snapshot {
+            Some(snapshot)
+                if snapshot.matches(
+                    &parsed
+                        .iter()
+                        .map(|file| (file.path.as_path(), file.source_hash.as_deref()))
+                        .collect::<Vec<_>>(),
+                ) =>
+            {
+                crate::code_graph::CodeGraph::from_snapshot(snapshot)
             }
-            graph
+            _ => {
+                parsed.par_iter_mut().for_each(|file| {
+                    if file.tree.is_none() && !file.skipped && file.issues.is_empty() {
+                        Scanner::parse_tree(&self.parsers, file);
+                    }
+                });
+                let graph = crate::code_graph::CodeGraph::build(
+                    parsed.iter().filter_map(ParsedFile::indexed).collect(),
+                );
+                if let Some(cache) = &self.cache {
+                    let files = parsed
+                        .iter()
+                        .filter_map(|file| {
+                            file.source_hash
+                                .as_ref()
+                                .map(|hash| crate::code_graph::GraphFileMeta {
+                                    path: file.path.clone(),
+                                    hash: hash.clone(),
+                                })
+                        })
+                        .collect();
+                    let _ = cache.save_graph_snapshot(graph.snapshot_with(files));
+                }
+                graph
+            }
         };
         // Phase 3: run rules per file with cross-file callee resolution
         // (parallel; the graph is read-only and shared).

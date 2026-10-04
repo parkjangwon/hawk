@@ -1,0 +1,13 @@
+id = "python.security.weak-crypto"
+name = "Weak cryptographic hash (MD5 or SHA1)"
+description = "hashlib.md5 and hashlib.sha1 are vulnerable to collisions and should not be used for security-sensitive hashing."
+recommendation = "Use hashlib.sha256 or hashlib.sha512 for cryptographic hashing."
+category = "cryptography"
+severity = "medium"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-328"
+owasp = "A02:2021"
+
+[pattern]
+regex = "hashlib\\.(md5|sha1)\\s*\\("

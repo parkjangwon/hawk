@@ -1,0 +1,13 @@
+id = "javascript.security.weak-crypto"
+name = "Weak cryptographic hash (MD5 or SHA1)"
+description = "MD5 and SHA1 hashes are vulnerable to collision attacks and must not be used for cryptographic integrity or passwords."
+recommendation = "Use SHA-256 or SHA-512 via crypto.createHash('sha256')."
+category = "cryptography"
+severity = "medium"
+confidence = "high"
+languages = ["javascript", "typescript"]
+cwe = "CWE-328"
+owasp = "A02:2021"
+
+[pattern]
+regex = "createHash\\s*\\(\\s*['\"](md5|sha1)['\"]"

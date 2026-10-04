@@ -1,0 +1,14 @@
+id = "python.security.yaml-unsafe-load"
+name = "Unsafe YAML loading"
+description = "yaml.load() without SafeLoader or yaml.unsafe_load() can execute arbitrary Python code during deserialization."
+recommendation = "Use yaml.safe_load(data) instead of yaml.load(data)."
+category = "deserialization"
+severity = "critical"
+confidence = "high"
+languages = ["python"]
+cwe = "CWE-502"
+owasp = "A08:2021"
+
+[pattern]
+regex = "yaml\\.(load|unsafe_load)\\s*\\([^)]*\\)"
+not_regex = "Loader\\s*=\\s*(yaml\\.)?(SafeLoader|CSafeLoader)"

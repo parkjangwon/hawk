@@ -165,8 +165,9 @@ hawk-cli (crates/hawk-cli)
       ├─ language.rs extension → Language (java/js/ts/py/go)
       ├─ parser.rs, ast.rs  Tree-sitter behind SyntaxTree/AstNode adapters
       ├─ semantic.rs symbol collection (types/functions/variables)
-      ├─ taint.rs     intraprocedural source→sanitizer→sink engine (Java)
-      ├─ pack.rs      rule packs (pattern/query/taint capabilities), DSL loader
+      ├─ code_graph.rs project-wide symbol and call-edge index
+      ├─ taint.rs, taint_engine.rs intra/interprocedural data-flow engine
+      ├─ pack.rs, pack_load.rs rule packs (pattern/query/taint), DSL loader
       ├─ config.rs    hawk.toml discovery + parsing + precedence
       ├─ cache.rs, git.rs, baseline.rs  incrementality and baselining
       ├─ reporter.rs  terminal reporter (human)

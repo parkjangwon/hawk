@@ -1,0 +1,13 @@
+id = "go.security.weak-crypto"
+name = "Weak cryptographic hash (MD5 or SHA1)"
+description = "MD5 and SHA1 are cryptographically broken hash algorithms susceptible to collision attacks. Use SHA-256 (crypto/sha256) or SHA-3 instead."
+recommendation = "Replace crypto/md5 and crypto/sha1 with crypto/sha256 or crypto/sha512 for security-sensitive operations."
+category = "cryptography"
+severity = "medium"
+confidence = "high"
+languages = ["go"]
+cwe = "CWE-328"
+owasp = "A02:2021"
+
+[pattern]
+regex = "(md5\\.New|md5\\.Sum|sha1\\.New|sha1\\.Sum)\\s*\\("

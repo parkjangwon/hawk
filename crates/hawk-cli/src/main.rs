@@ -148,7 +148,14 @@ where
 
     // Git-aware modes resolve explicit paths to changed/staged files first.
     let targets = if let Some(mode) = git_mode {
-        let cwd = std::env::current_dir().expect("current directory should exist");
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                return fatal(format!(
+                    "unable to determine current working directory: {error}"
+                ))
+            }
+        };
         match hawk_core::git::changed_files(&cwd, mode) {
             Ok(files) => files.into_iter().map(ScanTarget::File).collect::<Vec<_>>(),
             Err(error) => return fatal(error.to_string()),
@@ -298,11 +305,11 @@ pub(crate) fn fatal(message: String) -> RunOutcome {
 }
 
 fn print_help() {
-    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache
+    println!("Hawk — local-first static security analysis\n\nUsage:\n  hawk [OPTIONS] [PATH ...]\n  hawk rule <list|explain <id>|test <rule> <fixture>>\n\nArguments:\n  PATH ...  File or directory to scan (default: current directory).\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n  --changed      Scan working-tree files changed since the index\n  --staged       Scan files staged for commit\n  --no-cache     Disable the incremental result cache\n  --baseline     Filter findings against .hawk/baseline.json (only report/fail on new findings)
   --pack NAME    Only load the named rule pack (repeatable)
   --format F     Report format: terminal (default), json, sarif, html
   --fail-on-severity L  Only fail (exit 2) for findings at/above severity L
-  -o, --output   Write the report to a file instead of stdout\n\nExit codes:\n  0 clean    1 fatal error, 2 findings, 3 degraded (incomplete( scan");
+  -o, --output   Write the report to a file instead of stdout\n\nExit codes:\n  0 clean, 1 fatal error, 2 findings, 3 degraded (incomplete) scan");
 }
 
 #[cfg(test)]

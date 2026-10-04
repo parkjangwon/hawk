@@ -20,8 +20,7 @@ Before substantial implementation of each public subsystem, settle the following
 - [x] Define finding fingerprint/stability rules.
 - [x] Define baseline behavior.
 - [x] Define include/exclude/ignore semantics.
-- [x] Decide parser technology and language-specific AST adapters.
-- [ ] Decide licensing and attribution requirements for external rule standards.
+- [x] Decide licensing and attribution requirements for external rule standards.
 - [x] Document which Korean secure-coding standards/rules can be implemented and how they are attributed.
 - [x] Keep optional future storage extensibility in mind without introducing a database.
 
@@ -262,10 +261,10 @@ Reports should be **English-first** for international portability.
 
 **Goal: provide a strong Korea-oriented Rule Pack without coupling Korean policy to the core engine.**
 
-- [ ] Research authoritative Korean secure-coding standards.
-- [ ] Verify copyright/license/attribution requirements.
+- [x] Research authoritative Korean secure-coding standards.
+- [x] Verify copyright/license/attribution requirements.
 - [x] Define independent Hawk rule IDs.
-- [ ] Map rules to applicable Korean guidance.
+- [x] Map rules to applicable Korean guidance.
 - [x] Implement high-value Java rules first.
 - [x] Add CWE mappings where applicable.
 - [x] Add OWASP mappings where applicable.

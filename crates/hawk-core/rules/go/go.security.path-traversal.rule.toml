@@ -1,0 +1,13 @@
+id = "go.security.path-traversal"
+name = "Path traversal via unvalidated file access"
+description = "Using external input directly in file opening or path resolution without validation can allow attackers to read arbitrary files."
+recommendation = "Use filepath.Clean, sanitize against dot-dot patterns, or ensure resolved paths stay within the intended directory base."
+category = "path-traversal"
+severity = "high"
+confidence = "medium"
+languages = ["go"]
+cwe = "CWE-22"
+owasp = "A01:2021"
+
+[pattern]
+regex = "os\\.(Open|OpenFile|ReadFile)\\s*\\([^)]*(r\\.URL|r\\.Form|req\\.URL|c\\.Query|c\\.Param|input|param)"

@@ -23,11 +23,11 @@ impl SyntaxTree {
     /// graph re-parses such files on demand.
     pub(crate) fn placeholder() -> Self {
         let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter::Language::from(tree_sitter_java::LANGUAGE))
-            .expect("java grammar must load");
-        Self {
-            tree: parser.parse("", None).expect("empty source parses"),
+        let _ = parser.set_language(&tree_sitter::Language::from(tree_sitter_java::LANGUAGE));
+        if let Some(tree) = parser.parse("", None) {
+            Self { tree }
+        } else {
+            unreachable!("static Java grammar empty source parse invariant violated");
         }
     }
 }
