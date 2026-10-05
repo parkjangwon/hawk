@@ -247,18 +247,23 @@ impl CodeGraph {
         for file in &graph.files {
             collect_edges(file.tree.root(), file, &mut pending);
         }
+        // Map caller → symbol index once; a per-call linear scan over all
+        // symbols made large projects quadratic in symbol/call counts.
+        let mut caller_index: HashMap<(PathBuf, usize, String), usize> = HashMap::new();
+        for (index, symbol) in graph.symbols.iter().enumerate() {
+            caller_index.insert(
+                (symbol.file.clone(), symbol.line, symbol.name.clone()),
+                index,
+            );
+        }
         for call in pending {
-            // Map the caller back to its symbol via (file, line, name).
-            let caller = graph
-                .symbols
-                .iter()
-                .enumerate()
-                .find(|(_, symbol)| {
-                    symbol.file == call.caller_file
-                        && symbol.line == call.caller_line
-                        && symbol.name == call.caller_name
-                })
-                .map(|(index, _)| index);
+            let caller = caller_index
+                .get(&(
+                    call.caller_file.clone(),
+                    call.caller_line,
+                    call.caller_name.clone(),
+                ))
+                .copied();
             let Some(caller) = caller else { continue };
             graph.edges.push(CallEdge {
                 caller,

@@ -9,5 +9,7 @@ languages = ["python"]
 cwe = "CWE-22"
 owasp = "A01:2021"
 
-[pattern]
-regex = "open\\s*\\([^\"']"
+[taint]
+sources = ["request.args", "request.form", "request.values", "request.files", "sys.argv", "input("]
+sanitizers = ["os.path.basename", "secure_filename", "safe_join"]
+sinks = ["open(", "os.open(", "os.remove(", "os.unlink(", "shutil.copy(", "shutil.move(", "send_file("]

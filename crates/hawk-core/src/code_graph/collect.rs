@@ -69,7 +69,10 @@ fn collect_typed_vars(
     line: usize,
     var_types: &mut Vec<(usize, usize, String, String)>,
 ) {
-    if !matches!(file.language, Language::Java | Language::TypeScript) {
+    if !matches!(
+        file.language,
+        Language::Java | Language::TypeScript | Language::Tsx
+    ) {
         return;
     }
     let mut push = |node: AstNode<'_>, source: &str| {
@@ -195,7 +198,7 @@ pub(crate) fn collect_hierarchy(
                         }
                     }
                 }
-                Language::TypeScript => {
+                Language::TypeScript | Language::Tsx => {
                     if let Some(heritage) = node.child_by_field_name("class_heritage") {
                         for clause in heritage.children() {
                             match clause.kind() {
@@ -253,7 +256,7 @@ pub(crate) fn collect_imports(
         namespaces: &mut Vec<(usize, String, String)>,
     ) {
         match file.language {
-            Language::JavaScript | Language::TypeScript => {
+            Language::JavaScript | Language::TypeScript | Language::Tsx => {
                 if node.kind() == "import_statement" {
                     let Some(source) = node
                         .child_by_field_name("source")

@@ -5,7 +5,10 @@ problem matchers rather than a plugin.
 
 ## Visual Studio Code
 
-Add a task in `.vscode/tasks.json` that scans the workspace and marks issues:
+Add a task in `.vscode/tasks.json`. Hawk's **terminal** output is one line per
+finding (`SEVERITY file:line:column`), which is exactly what a problem matcher
+can parse — the JSON output is pretty-printed and spans multiple lines, so it
+cannot drive a problem matcher:
 
 ```json
 {
@@ -14,14 +17,16 @@ Add a task in `.vscode/tasks.json` that scans the workspace and marks issues:
     {
       "label": "Hawk: scan",
       "type": "shell",
-      "command": "hawk --format json .",
+      "command": "hawk --min-severity low .",
       "problemMatcher": {
         "owner": "hawk",
         "fileLocation": ["relative", "${workspaceFolder}"],
         "pattern": {
-          "regexp": ".*\"file\": \"(.*)\",.*\"line\": ([0-9]+).*",
-          "file": 1,
-          "line": 2
+          "regexp": "^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\\s+(.+):(\\d+):(\\d+)$",
+          "severity": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4
         }
       },
       "group": "build"
@@ -32,11 +37,11 @@ Add a task in `.vscode/tasks.json` that scans the workspace and marks issues:
 
 ## IntelliJ IDEA
 
-- Use **Tools → Shell Scripts → Run** with `hawk —format json .` and a custom
-  JSON problem matcher, or wire it into a file watcher:
+- Use **Tools → Shell Scripts → Run** with `hawk --format terminal .`, or wire
+  it into a file watcher:
   - Settings → Tools → File Watchers → `+` → Custom
   - Program: `hawk`
-  - Arguments: `--format json $FilePath$`
+  - Arguments: `--min-severity low $FilePath$`
 
 ## pre-commit
 

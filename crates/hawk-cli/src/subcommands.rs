@@ -162,7 +162,7 @@ fn run_rule_test(args: &[String]) -> RunOutcome {
     // a language it does not declare.
     let fixture_language = hawk_core::language::Language::from_path(std::path::Path::new(&fixture));
     if fixture_language != hawk_core::language::Language::Unknown
-        && !rule.languages().contains(&fixture_language)
+        && !hawk_core::language::Language::rule_applies_to(rule.languages(), fixture_language)
     {
         return fatal(format!(
             "rule '{}' does not apply to language {:?} (fixture '{fixture}')",

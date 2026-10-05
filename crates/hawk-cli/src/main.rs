@@ -76,6 +76,7 @@ where
     let mut format: Option<String> = config_format(&config);
     let mut output: Option<PathBuf> = config.report.output.clone();
     let mut fail_on_severity: Option<Severity> = config.policy.exit_on_severity;
+    let mut min_severity: Option<Severity> = None;
     let mut use_baseline = false;
     let mut packs: Vec<String> = config.packs.clone();
     let mut cli_selected_packs = false;
@@ -118,6 +119,20 @@ where
                     }
                 });
             }
+            "--min-severity" => {
+                let level = match it.next() {
+                    Some(value) => value.clone(),
+                    None => return fatal("--min-severity requires a severity".to_string()),
+                };
+                min_severity = Some(match parse_severity(&level) {
+                    Some(s) => s,
+                    None => {
+                        return fatal(format!(
+                        "unknown severity '{level}' (expected info, low, medium, high, critical)"
+                    ))
+                    }
+                });
+            }
             "--format" => {
                 format = Some(match it.next() {
                     Some(value) => value.clone(),
@@ -147,6 +162,8 @@ where
     };
 
     // Git-aware modes resolve explicit paths to changed/staged files first.
+    // Positional path arguments narrow the changed-file set (prefix match) so
+    // `hawk --changed src/` means "changed files under src/".
     let targets = if let Some(mode) = git_mode {
         let cwd = match std::env::current_dir() {
             Ok(cwd) => cwd,
@@ -157,7 +174,28 @@ where
             }
         };
         match hawk_core::git::changed_files(&cwd, mode) {
-            Ok(files) => files.into_iter().map(ScanTarget::File).collect::<Vec<_>>(),
+            Ok(files) => {
+                // Positional roots may be relative (e.g. `hawk --changed src/`)
+                // while git returns absolute paths — compare on absolute form.
+                let roots: Vec<PathBuf> = paths
+                    .iter()
+                    .map(|root| {
+                        if root.is_absolute() {
+                            root.clone()
+                        } else {
+                            cwd.join(root)
+                        }
+                    })
+                    .collect();
+                let narrowed: Vec<_> = files
+                    .into_iter()
+                    .filter(|file| {
+                        roots.is_empty() || roots.iter().any(|root| file.starts_with(root))
+                    })
+                    .map(ScanTarget::File)
+                    .collect();
+                narrowed
+            }
             Err(error) => return fatal(error.to_string()),
         }
     } else {
@@ -197,10 +235,22 @@ where
         Ok(result) => result,
         Err(error) => return fatal(error.to_string()),
     };
+    if use_cache {
+        // Best-effort housekeeping: entries older than 30 days are stale
+        // artifacts of past file versions. Never blocks the scan result.
+        let _ = hawk_core::cache::Cache::new(config.data_dir().join("cache"))
+            .prune_older_than(std::time::Duration::from_secs(30 * 24 * 3600));
+    }
     let duration = started.elapsed().as_millis();
     let mut result = result;
     if use_baseline {
         let baseline_path = hawk_core::baseline::baseline_path(&config.root_dir());
+        if !baseline_path.is_file() {
+            return fatal(format!(
+                "baseline not found at {} — run 'hawk baseline create' first, or drop --baseline",
+                baseline_path.display()
+            ));
+        }
         let baseline = match hawk_core::baseline::Baseline::load(&baseline_path) {
             Ok(baseline) => baseline,
             Err(error) => return fatal(format!("baseline error: {error}")),
@@ -220,6 +270,11 @@ where
             filtered.push(finding);
         }
         result.findings = filtered;
+    }
+    if let Some(floor) = min_severity {
+        // Display filter: findings below the floor drop out of every report
+        // (the exit policy is `--fail-on-severity`, which stays independent).
+        result.findings.retain(|finding| finding.severity >= floor);
     }
 
     let rendered = match format.as_deref() {
@@ -309,6 +364,7 @@ fn print_help() {
   --pack NAME    Only load the named rule pack (repeatable)
   --format F     Report format: terminal (default), json, sarif, html
   --fail-on-severity L  Only fail (exit 2) for findings at/above severity L
+  --min-severity L  Only report findings at/above severity L (display filter)
   -o, --output   Write the report to a file instead of stdout\n\nExit codes:\n  0 clean, 1 fatal error, 2 findings, 3 degraded (incomplete) scan");
 }
 

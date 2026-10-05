@@ -2,7 +2,43 @@
 
 > 계획 문서의 모든 P0 및 P1 이슈/개선점을 성공적으로 처리하였습니다. `cargo test`, `clippy -D warnings`, `cargo fmt` 품질 게이트를 모두 통과했습니다.
 
-## 현황 (개선 완료)
+## v0.4.0 — 실용성 외부 리뷰 반영 (2026-10-05)
+
+20년차 시니어 보안 엔지니어 관점의 실용성 리뷰(코드 정독 + 실측 재현)에서 도출된 전체 P0/P1/P2 항목을 처리했다. 품질 게이트 전 통과.
+
+### P0 — 약속과 동작의 불일치 (전부 수정, 실측으로 재검증)
+
+1. **룰 임베디드 드리프트 (P0 중 최우선)**: `built_in_packs()`의 수작업 `include_str!` 목록이 `rules/` 디렉터리와 어긋나 **룰 10개가 바이너리에 탑재되지 않았고**, CI 픽스처 게이트가 임베디드 목록만 순회해 누락을 못 잡았다. → `build.rs`가 `rules/` 디렉터리에서 임베디드 목록을 **생성**(디렉터리 = 단일 진실 원천)하고, `embedded_rule_set_matches_the_rules_directory` 이중 검증 테스트를 추가. 누락됐던 10개 룰의 픽스처를 처음으로 CI가 검증하게 되었고, 그 과정에서 잠복했던 픽스처 실패 2건을 수정했다.
+2. **`not_regex` 침묵 버그**: serde `rename = "not-regex"` 때문에 룰 TOML의 `not_regex`(언더스코어) 4건이 조용히 버려져 네거티브 필터가 꺼져 있었다. → serde `alias`로 양쪽 표기 수용.
+3. **테인트 인자 바인딩 버그**: `bind_params`가 첫 untainted 인자에서 `break`하여 `f("const", tainted)` 형태의 크로스파일 플로우가 전부 미탐. → `continue`로 수정 + 회귀 테스트.
+4. **파라미터화 쿼리 CRITICAL 오탐**: `db.Query("... ?", id)` — 권장 안전 형태를 최고 등급으로 보고. → 엔진에 placeholder(`?`, `%s`, `$1`, `#{}`) 인식 추가: 순수 리터럴 쿼리 + 별도 바인딩 인자는 안전 판정. + 회귀 테스트.
+5. **룰 정규식 결함 3건**: `innerHTML\s*=\s*[^"']`의 공백 백트래킹 오탐 → `[^"'\s]` 수정. `runtime-exec`의 상수 인자 오탐 → 동적 인자만 매칭. `java.security.xss`의 `.write(`/.print(` 과잉 매칭 → 서블릿 writer 싱크로 축소.
+6. **TSX 미지원**: `.tsx`를 TS 그래마로 파싱해 모든 React 파일이 degraded(exit 3). → `Language::Tsx` + 전용 TSX 그래마 + 룰 매칭 헬퍼(`rule_applies_to`).
+7. **`--changed` untracked 미탐**: 신규 파일이 `git diff`에 없어 0파일 스캔. → `git ls-files --others --exclude-standard` union (.gitignore 존중).
+8. **Baseline 라인 이동 churn**: fingerprint가 line/col 기반여서 무관한 편집만으로 `1 new, 1 fixed` 발생. → **snippet 기반 fingerprint**(정규화된 스니펫 + 경로)로 재설계, 재들여쓰기/라인 이동에 안정.
+9. **korea.py.path-traversal**: 모든 `open(변수)`에 HIGH 오탐 → taint 룰로 전환(소스→싱크 플로우만 보고).
+
+### P1 — 채택 장애물 (전부 구현)
+
+- **인라인 서프레션**: `// hawk:ignore [rule-id...]` / `# nosec` (같은 줄 또는 바로 위 줄, 룰 스코프 지정 가능). 억제 카운트는 터미널/JSON/HTML 리포트에 집계되어 감사 가능.
+- **리포트 개선**: JSON에 `description`/`recommendation` 필드 추가; SARIF에 `full_description`/`help`/properties(CWE·OWASP·심각도·수정 가이드)/`partialFingerprints`(GitHub 알림 추적)/정규화된 URI 추가; 터미널 룰 라인에 CWE 표기; HTML에 CWE/OWASP 컬럼.
+- **테인트 소스 위치**: finding 메시지에 오염 진입 라인 표기("source at line N"), 변수 간 전파 시 origin 상속.
+- **심각도 정렬**: 모든 리포트가 CRITICAL→INFO, 위치 순의 결정론적 triage 순서로 출력.
+- **`--min-severity`**: 보고 필터(종료 코드 정책과 독립).
+- **exclude 의미론**: substring 매칭(`exclude=["test"]`가 `contest/`를 지움) → 세그먼트 glob 매칭. 기존 `/fixtures/` 표기 호환.
+- **기본 무시 디렉터리 확대**: `.venv`, `venv`, `vendor`, `__pycache__`, `.next`, `.nuxt`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.idea`, `.gradle`, `coverage` 추가.
+- **프레임워크 소스**: `taint.param-annotations`로 Spring `@RequestParam`/`@PathVariable`/`@RequestHeader`/`@RequestBody` 파라미터를 소스화(옵트인).
+- **성능/자원**: CodeGraph caller 역추적 O(호출×심볼) → 해시 인덱스; 캐시 30일 TTL 정리(무한 성장 방지).
+- **CLI**: `--changed`/`--staged`가 위치 인자와 교집합; baseline 부재 시 `hawk baseline create` 안내.
+
+### P2 — 품질·생태계
+
+- **secrets 룰 팩 신규 (7룰)**: AWS/GitHub/Google/Stripe/Slack 토큰, PEM 개인키, 범용 크리덴셜 할당. 픽스처 전수 통과.
+- **설치 체인**: release.yml이 SHA256SUMS를 게시하고 install.sh가 검증(불일치 시 실패, 구버전은 경고).
+- **문서 실정화**: integrations.md의 동작하지 않는 problemMatcher(멀티라인 JSON 매칭)를 터미널 기반으로 수정, em-dash 오타 수정; false_positive_benchmarks.md를 "픽스처 회귀 ≠ 오탐률 측정"으로 명확화하고 실측 기록 절 신설; go 팩 한국어 메타데이터를 영어로 통일.
+- 기타: 버전 0.4.0(fingerprint/캐시 스키마 무효화 겸용), `.mimosa/` gitignore.
+
+## 현황 (v0.3.0 개선 완료 기록)
 
 - Rust 워크스페이스(`hawk-core`, `hawk-cli`), 소스 약 1.03만 줄, **룰 총 83개** (9개 신규 추가).
 - 룰 개수: korea 51 / java 9 / python 9 / js 8 / go 6.

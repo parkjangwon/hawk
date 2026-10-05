@@ -10,6 +10,7 @@ cwe = "CWE-89"
 owasp = "A03:2021"
 
 [taint]
+param-annotations = ["@RequestParam", "@PathVariable", "@RequestHeader", "@RequestBody"]
 sources = ["getParameter", "getHeader", "getQueryString"]
-sanitizers = ["escapeSql", "sanitizeSql", "setString"]
+sanitizers = ["escapeSql", "sanitizeSql"]
 sinks = [".executeQuery(", ".execute(", ".executeUpdate(", "query("]

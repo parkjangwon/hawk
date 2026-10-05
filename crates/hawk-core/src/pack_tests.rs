@@ -259,6 +259,46 @@ fn query_anchor_selects_the_finding_node_and_not_regex_filters_matches() {
 }
 
 #[test]
+fn embedded_rule_set_matches_the_rules_directory() {
+    // Defense in depth for the build.rs generation: the embedded pack list is
+    // generated from `rules/`, so the counts must agree. A mismatch means the
+    // generator skipped something (or a stray file appeared) — fail loudly
+    // instead of silently shipping a subset of the rules.
+    let registry = PackRegistry::with_built_in().expect("built-ins should load");
+    let embedded = registry.count();
+
+    let rules_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("rules");
+    let mut on_disk = Vec::new();
+    collect_rule_files_recursive(&rules_root, &mut on_disk);
+
+    assert_eq!(
+        embedded,
+        on_disk.len(),
+        "embedded rules ({embedded}) must match on-disk rule files ({}): {:?}",
+        on_disk.len(),
+        on_disk
+    );
+}
+
+fn collect_rule_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !name.starts_with('.') {
+                collect_rule_files_recursive(&path, out);
+            }
+        } else if name.ends_with(".rule.toml") {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
 fn every_built_in_rule_has_a_fixture_that_passes() {
     let registry = PackRegistry::with_built_in().expect("built-ins should load");
     let mut missing = Vec::new();

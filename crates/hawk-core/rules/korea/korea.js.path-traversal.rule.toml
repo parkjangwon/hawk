@@ -10,4 +10,4 @@ cwe = "CWE-22"
 owasp = "A01:2021"
 
 [pattern]
-regex = "fs\\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream)\\s*\\([^\"']"
+regex = "fs\\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink)\\s*\\([^)]*(req\\.|request|params|query|argv)"

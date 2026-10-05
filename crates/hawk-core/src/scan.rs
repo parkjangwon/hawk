@@ -53,12 +53,33 @@ impl Scanner {
     pub fn scan_targets(&self, targets: &[ScanTarget]) -> Result<ScanResult, ScanError> {
         let files =
             discover_with_excludes(targets, &self.excludes).map_err(ScanError::Discovery)?;
-        // Phase 1: hash + cache-check every file in parallel. Cache hits (files
-        // unchanged since the last scan) are not read or parsed here; cache
+        // Phase 1: hash every file in parallel. Hashing requires reading the
+        // file anyway, so no extra I/O — but doing it first binds the cache
+        // to the whole scanned file set: cross-file analysis makes per-file
+        // findings a function of the entire scope, so a cached result must
+        // never be replayed against a different or changed file set.
+        let hashes: Vec<Option<String>> = files
+            .par_iter()
+            .map(|file| cache::source_hash_of_file(file.path()).ok())
+            .collect();
+        let scope_id = {
+            let mut material = String::new();
+            for (file, hash) in files.iter().zip(&hashes) {
+                if let Some(hash) = hash {
+                    material.push_str(&format!("{}\0{}\0", file.path().to_string_lossy(), hash));
+                }
+            }
+            cache::hash_bytes(material.as_bytes())
+        };
+        // Phase 2: cache-check every file in parallel. Cache hits (file and
+        // scope unchanged since the last scan) are not parsed here; cache
         // misses are read and parsed for the rule phase.
         let mut parsed: Vec<ParsedFile> = files
             .par_iter()
-            .map(|file| Scanner::prepare_one(&self.parsers, &self.cache, file.path()))
+            .zip(hashes.par_iter())
+            .map(|(file, hash)| {
+                Scanner::prepare_one(&self.parsers, &self.cache, file.path(), hash, &scope_id)
+            })
             .collect();
         // Phase 2: project-wide architecture index (symbols + call edges).
         // When every file's hash matches the persisted snapshot, the graph is
@@ -110,7 +131,7 @@ impl Scanner {
         // (parallel; the graph is read-only and shared).
         let per_file: Vec<ScanResult> = parsed
             .par_iter()
-            .map(|file| Scanner::scan_parsed(&self.packs, &graph, &self.cache, file))
+            .map(|file| Scanner::scan_parsed(&self.packs, &graph, &self.cache, file, &scope_id))
             .collect();
 
         let mut result = ScanResult::new(files.len());
@@ -119,11 +140,15 @@ impl Scanner {
         for file_result in per_file {
             result.scanned_files += file_result.scanned_files;
             result.skipped_files += file_result.skipped_files;
+            result.suppressed_inline += file_result.suppressed_inline;
             result.issues.extend(file_result.issues);
             for finding in file_result.findings.iter() {
                 result.findings.push(finding.clone());
             }
         }
+        // Triage order is part of the report contract: severity first, then
+        // location. Deterministic regardless of rayon's completion order.
+        result.findings.sort_for_triage();
         result.rule_categories = self.summarize_categories(&result);
         Ok(result)
     }
@@ -168,16 +193,17 @@ impl Scanner {
         self.packs.count() > 0
     }
 
-    /// Phase 1a: hashes the file and checks the findings cache. Cache hits
-    /// (unchanged files) return without reading or parsing the source; cache
-    /// misses are read and parsed immediately. The hash is kept so the graph
-    /// snapshot can be matched/rebuilt without a second read. Files with an
-    /// unsupported language are skipped without reading their content (a
-    /// binary file must never surface a read error or degrade the scan).
+    /// Phase 2a: checks the findings cache with the file's precomputed hash.
+    /// Cache hits (unchanged file, unchanged scope) return without parsing;
+    /// cache misses are read and parsed immediately. Files with an unsupported
+    /// language are skipped (a binary file must never surface a read error or
+    /// degrade the scan).
     fn prepare_one(
         parsers: &ParserRegistry,
         cache: &Option<cache::Cache>,
         path: &Path,
+        precomputed_hash: &Option<String>,
+        scope_id: &str,
     ) -> ParsedFile {
         let mut file = ParsedFile {
             path: path.to_path_buf(),
@@ -187,7 +213,7 @@ impl Scanner {
             cached_findings: Vec::new(),
             cache_hit: false,
             skipped: false,
-            source_hash: None,
+            source_hash: precomputed_hash.clone(),
             issues: Vec::new(),
         };
 
@@ -213,18 +239,15 @@ impl Scanner {
         if parsers.parser_for(language).is_none() {
             // Unsupported extension: skipped, but hashed so the graph snapshot
             // can still be matched (identity is per file, not per language).
-            if cache.is_some() {
-                file.source_hash = cache::source_hash_of_file(path).ok();
-            }
             file.skipped = true;
             return file;
         }
 
-        // Cache fast path: unchanged files reuse previous findings.
+        // Cache fast path: unchanged files (and unchanged scope — the key
+        // binds to every scanned file's hash) reuse previous findings.
         if let Some(cache) = cache {
-            if let Ok(hash) = cache::source_hash_of_file(path) {
-                file.source_hash = Some(hash.clone());
-                if let Some(cached) = cache.get(path, &hash) {
+            if let Some(hash) = precomputed_hash {
+                if let Some(cached) = cache.get(scope_id, path, hash) {
                     file.cached_findings = cached;
                     file.cache_hit = true;
                     return file;
@@ -275,6 +298,7 @@ impl Scanner {
         graph: &crate::code_graph::CodeGraph,
         cache: &Option<cache::Cache>,
         file: &ParsedFile,
+        scope_id: &str,
     ) -> ScanResult {
         let mut result = ScanResult::new(1);
 
@@ -310,7 +334,7 @@ impl Scanner {
         let scanned: Vec<_> = {
             let mut findings = Vec::new();
             for rule in packs.iter() {
-                if rule.languages().contains(&file.language) {
+                if Language::rule_applies_to(rule.languages(), file.language) {
                     findings.extend(rule.check_parsed_with_graph(
                         tree,
                         source,
@@ -321,19 +345,39 @@ impl Scanner {
             }
             findings
         };
+        // Inline suppression (`hawk:ignore` / `nosec`): the developer's
+        // per-line override. Filtered before caching, so adding or removing a
+        // marker changes the file hash and re-runs the analysis.
+        let suppressions = crate::suppress::parse_suppressions(source);
+        let mut suppressed_inline = 0usize;
+        let scanned: Vec<_> = scanned
+            .into_iter()
+            .filter(|finding| {
+                let suppressed = crate::suppress::is_suppressed(
+                    &suppressions,
+                    finding.location.start_line,
+                    &finding.rule_id,
+                );
+                if suppressed {
+                    suppressed_inline += 1;
+                }
+                !suppressed
+            })
+            .collect();
+        result.suppressed_inline = suppressed_inline;
         for finding in &scanned {
             result.findings.push(finding.clone());
         }
 
         if let Some(cache) = cache {
-            // Reuse the phase-1 hash; if the file changed mid-scan the entry
-            // simply misses on the next scan and is re-analyzed.
+            // Reuse the phase-1 hash; the scope-bound key means a changed file
+            // set (or changed file) simply misses on the next scan.
             if let Some(hash) = file.source_hash.clone() {
                 let mut findings = Findings::new();
                 for f in scanned {
                     findings.push(f);
                 }
-                let _ = cache.put(&file.path, &hash, &findings);
+                let _ = cache.put(scope_id, &file.path, &hash, &findings);
             }
         }
         result
@@ -396,6 +440,8 @@ pub struct ScanResult {
     pub discovered_files: usize,
     pub scanned_files: usize,
     pub skipped_files: usize,
+    /// Findings removed by inline `hawk:ignore`/`nosec` markers this scan.
+    pub suppressed_inline: usize,
     pub issues: Vec<FileIssue>,
     pub findings: Findings,
     pub rule_count: usize,
@@ -655,5 +701,31 @@ class UserService {
             1,
             "restored graph must re-resolve cross-file callees via lazy parse"
         );
+    }
+    #[test]
+    fn inline_hawk_ignore_markers_suppress_findings() {
+        let temp = TempDir::new();
+        let path = temp.write(
+            "Suppressed.java",
+            r#"
+class Suppressed {
+    void run(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String id = req.getParameter("id");
+        // hawk:ignore java.security.sql-injection
+        st.executeQuery("SELECT * FROM u WHERE id=" + id);
+        String q = req.getParameter("q");
+        st.executeQuery("SELECT * FROM v WHERE id=" + q);
+    }
+}
+"#,
+        );
+
+        let result = Scanner::built_in()
+            .unwrap()
+            .scan_paths(&[path.as_path()])
+            .unwrap();
+
+        assert_eq!(result.findings.len(), 1, "only the unmarked flow remains");
+        assert_eq!(result.suppressed_inline, 1);
     }
 }

@@ -10,6 +10,7 @@ cwe = "CWE-22"
 owasp = "A01:2021"
 
 [taint]
+param-annotations = ["@RequestParam", "@PathVariable", "@RequestHeader", "@RequestBody"]
 sources = ["getParameter", "getHeader"]
 sanitizers = ["canonicalize", "normalize", "sanitizePath"]
 sinks = ["new File(", "Paths.get(", "FileInputStream", "FileOutputStream"]

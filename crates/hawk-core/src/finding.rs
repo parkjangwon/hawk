@@ -1,4 +1,4 @@
-use std::{fmt, path::PathBuf};
+use std::{fmt, path::Path, path::PathBuf};
 
 use crate::language::Language;
 
@@ -101,7 +101,13 @@ impl Finding {
     ) -> Self {
         let rule_id = rule_id.into();
         let message = message.into();
-        let fingerprint = fingerprint_of(&rule_id, &location);
+        let fingerprint = fingerprint_of(
+            &rule_id,
+            &location.path,
+            location.start_line,
+            location.start_column,
+            None,
+        );
         Self {
             rule_name: rule_id.clone(),
             confidence: Confidence::default(),
@@ -167,35 +173,94 @@ impl Finding {
     }
 
     pub fn with_code_snippet(mut self, snippet: impl Into<String>) -> Self {
-        self.code_snippet = Some(snippet.into());
+        let snippet = snippet.into();
+        // The snippet is part of the finding identity: re-key the fingerprint
+        // so it stays stable across line shifts and only changes when the
+        // flagged code itself changes.
+        self.fingerprint = fingerprint_of(
+            &self.rule_id,
+            &self.location.path,
+            self.location.start_line,
+            self.location.start_column,
+            Some(&snippet),
+        );
+        self.code_snippet = Some(snippet);
         self
     }
 }
 
-/// FNV-1a 64-bit fingerprint over `rule_id\0path\0line\0column`,lowercase-hex..
-/// Stable per ADR-1002: no crypto, deterministic, sensitive to exactly the identifying attributes..
-fn fingerprint_of(rule_id: &str, location: &SourceLocation) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in rule_id
-        .bytes()
-        .chain([0])
-        .chain(location.path.to_string_lossy().bytes())
-        .chain([0])
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(1099511628211);
+/// FNV-1a 64-bit fingerprint, lowercase-hex. Stable per ADR-1002: no crypto,
+/// deterministic, sensitive to exactly the identifying attributes.
+///
+/// The fingerprint hashes `rule_id`, the normalized path, and — when the
+/// finding carries a code snippet — the *normalized snippet*, not the line
+/// number. Line numbers shift every time unrelated code is edited above the
+/// finding, which re-keyed every baseline on every refactor; hashing the
+/// snippet keeps the fingerprint stable across line moves and only changes
+/// when the flagged code itself changes. Findings without a snippet fall back
+/// to `line\0column`.
+fn fingerprint_of(
+    rule_id: &str,
+    path: &Path,
+    line: usize,
+    column: usize,
+    snippet: Option<&str>,
+) -> String {
+    fn feed(hash: &mut u64, bytes: &[u8]) {
+        for &byte in bytes {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(1099511628211);
+        }
     }
-    // Line/column always cross the file-bounds check; serialize with a unit separator to
-    // prefix-collision-proof the numeric fields..
-    for value in [location.start_line as u64, location.start_column as u64] {
-        hash ^= 31; // unit separator
-        hash = hash.wrapping_mul(1099511628211);
-        for byte in value.to_string().bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(1099511628211);
+    let mut hash: u64 = 0xcbf29ce484222325;
+    feed(&mut hash, rule_id.as_bytes());
+    feed(&mut hash, &[0]);
+    feed(&mut hash, normalize_path(path).as_bytes());
+    feed(&mut hash, &[0]);
+    match snippet.map(normalize_snippet) {
+        Some(snippet) if !snippet.is_empty() => feed(&mut hash, snippet.as_bytes()),
+        // No usable snippet: fall back to the position. Line/column are
+        // separated by a unit separator to prefix-collision-proof the
+        // numeric fields.
+        _ => {
+            feed(&mut hash, &[0]);
+            feed(&mut hash, line.to_string().as_bytes());
+            feed(&mut hash, &[0]);
+            feed(&mut hash, column.to_string().as_bytes());
         }
     }
     format!("{hash:016x}")
+}
+
+/// Path form used by fingerprints: forward slashes, no `./` prefix, so
+/// `hawk .` and `hawk /abs/path` on the same file agree whenever the path
+/// differs only in presentation.
+fn normalize_path(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let stripped = text
+        .strip_prefix("./")
+        .or_else(|| text.strip_prefix('.'))
+        .unwrap_or(&text);
+    stripped.strip_prefix('/').unwrap_or(stripped).to_string()
+}
+
+/// Snippet form used by fingerprints: trimmed, whitespace runs collapsed, so
+/// re-indentation or reformatting of the flagged line does not re-key it.
+fn normalize_snippet(snippet: &str) -> String {
+    let mut normalized = String::with_capacity(snippet.len());
+    let mut in_whitespace = false;
+    for character in snippet.trim().chars() {
+        if character.is_whitespace() {
+            if !in_whitespace {
+                normalized.push(' ');
+            }
+            in_whitespace = true;
+        } else {
+            in_whitespace = false;
+            normalized.push(character);
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -230,6 +295,20 @@ impl Findings {
 
     pub fn retain(&mut self, mut predicate: impl FnMut(&Finding) -> bool) {
         self.findings.retain(|finding| predicate(finding));
+    }
+
+    /// Deterministic triage order: severity first (most severe at the top),
+    /// then file, line, column, rule id. Reporters consume the findings in
+    /// this order so a developer reads CRITICAL findings before INFO noise.
+    pub fn sort_for_triage(&mut self) {
+        self.findings.sort_by(|a, b| {
+            b.severity
+                .cmp(&a.severity)
+                .then_with(|| a.location.path.cmp(&b.location.path))
+                .then_with(|| a.location.start_line.cmp(&b.location.start_line))
+                .then_with(|| a.location.start_column.cmp(&b.location.start_column))
+                .then_with(|| a.rule_id.cmp(&b.rule_id))
+        });
     }
 }
 
@@ -307,18 +386,35 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_is_stable_and_sensitive_to_location() {
-        let base = Finding::new("rule.a", Severity::High, "msg", location());
-        let same = Finding::new("rule.a", Severity::High, "msg", location());
+    fn fingerprint_is_stable_across_line_shifts() {
+        // The flagged line moved down (unrelated lines inserted above it) but
+        // the code itself is unchanged: same fingerprint, so baselines survive
+        // refactors.
+        let base = Finding::new("rule.a", Severity::High, "msg", location())
+            .with_code_snippet("executeQuery(input)");
+        let mut moved_location = location();
+        moved_location.start_line += 10;
+        moved_location.start_byte += 120;
+        let moved = Finding::new("rule.a", Severity::High, "msg", moved_location)
+            .with_code_snippet("executeQuery(input)");
 
-        assert_eq!(base.fingerprint, same.fingerprint);
+        assert_eq!(base.fingerprint, moved.fingerprint);
 
-        let mut loc = location();
-        loc.start_line += 1;
-        let moved = Finding::new("rule.a", Severity::High, "msg", loc);
-        assert_ne!(base.fingerprint, moved.fingerprint);
+        // The flagged code itself changed: new fingerprint.
+        let edited = Finding::new("rule.a", Severity::High, "msg", location())
+            .with_code_snippet("executeQuery(sanitized)");
+        assert_ne!(base.fingerprint, edited.fingerprint);
 
-        let other_rule = Finding::new("rule.b", Severity::High, "msg", location());
+        // Re-indentation / trailing whitespace of the same code does not
+        // re-key the fingerprint.
+        let reformatted = Finding::new("rule.a", Severity::High, "msg", location())
+            .with_code_snippet("      executeQuery(input);  ");
+        let base_with_semicolon = Finding::new("rule.a", Severity::High, "msg", location())
+            .with_code_snippet("executeQuery(input);");
+        assert_eq!(base_with_semicolon.fingerprint, reformatted.fingerprint);
+
+        let other_rule = Finding::new("rule.b", Severity::High, "msg", location())
+            .with_code_snippet("executeQuery(input)");
         assert_ne!(base.fingerprint, other_rule.fingerprint);
 
         let other_path = Finding::new(
@@ -329,8 +425,61 @@ mod tests {
                 path: PathBuf::from("Other.java"),
                 ..location()
             },
-        );
+        )
+        .with_code_snippet("executeQuery(input)");
         assert_ne!(base.fingerprint, other_path.fingerprint);
+    }
+
+    #[test]
+    fn fingerprint_normalizes_path_presentation() {
+        // `hawk .` produces `./X.java`, an absolute invocation produces the
+        // bare path: both must agree on the fingerprint.
+        let dotted = Finding::new(
+            "rule.a",
+            Severity::High,
+            "msg",
+            location_with_path("./X.java"),
+        );
+        let plain = Finding::new(
+            "rule.a",
+            Severity::High,
+            "msg",
+            location_with_path("X.java"),
+        );
+        assert_eq!(dotted.fingerprint, plain.fingerprint);
+
+        let backslash = Finding::new(
+            "rule.a",
+            Severity::High,
+            "msg",
+            location_with_path("src\\X.java"),
+        );
+        let forward = Finding::new(
+            "rule.a",
+            Severity::High,
+            "msg",
+            location_with_path("src/X.java"),
+        );
+        assert_eq!(backslash.fingerprint, forward.fingerprint);
+    }
+
+    fn location_with_path(path: &str) -> SourceLocation {
+        SourceLocation {
+            path: PathBuf::from(path),
+            ..location()
+        }
+    }
+
+    #[test]
+    fn findings_without_snippet_fall_back_to_position() {
+        let base = Finding::new("rule.a", Severity::High, "msg", location());
+        let same = Finding::new("rule.a", Severity::High, "msg", location());
+        assert_eq!(base.fingerprint, same.fingerprint);
+
+        let mut loc = location();
+        loc.start_line += 1;
+        let moved = Finding::new("rule.a", Severity::High, "msg", loc);
+        assert_ne!(base.fingerprint, moved.fingerprint);
     }
 
     #[test]

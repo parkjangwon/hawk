@@ -4,8 +4,32 @@ use std::path::{Path, PathBuf};
 
 use crate::scope::ScanTarget;
 
-const DEFAULT_IGNORED_DIRECTORIES: &[&str] =
-    &[".git", ".hawk", "node_modules", "target", "build", "dist"];
+const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
+    // Version control and hawk's own state.
+    ".git",
+    ".hawk",
+    // JavaScript/TypeScript.
+    "node_modules",
+    ".next",
+    ".nuxt",
+    "dist",
+    "coverage",
+    // Rust/C builds.
+    "target",
+    "build",
+    // Python.
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    // Vendored dependencies (Go, PHP, …).
+    "vendor",
+    // Editor / tooling state.
+    ".idea",
+    ".gradle",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryError {
@@ -119,11 +143,70 @@ fn collect_directory(
     Ok(())
 }
 
+/// Config `exclude` semantics: a pattern matches when
+/// - a single-segment pattern (`fixtures`, `*.min.js`) names some path
+///   component anywhere in the path, or
+/// - a multi-segment pattern (`src/generated`) matches a contiguous run of
+///   path components at any depth.
+///
+/// `*` acts as a within-segment wildcard. Leading/trailing slashes and a
+/// leading `./` are ignored, so the older `"/fixtures/"` style keeps working.
+/// (Substring matching was deliberately rejected: `exclude = ["test"]` used
+/// to exclude `src/contest/Main.java`.)
 fn is_excluded(path: &Path, excludes: &[String]) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let components: Vec<&str> = normalized.split('/').filter(|c| !c.is_empty()).collect();
     excludes.iter().any(|pattern| {
-        let normalized = path.to_string_lossy();
-        normalized == pattern.as_str() || normalized.contains(pattern)
+        let pattern = pattern.trim();
+        let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
+        let pattern = pattern.trim_matches('/');
+        if pattern.is_empty() {
+            return false;
+        }
+        let segments: Vec<&str> = pattern.split('/').collect();
+        if segments.len() == 1 {
+            components
+                .iter()
+                .any(|component| glob_match(segments[0], component))
+        } else {
+            // Any contiguous run of path components at any depth (paths
+            // arrive prefixed by the scan target, often absolute).
+            components.len() >= segments.len()
+                && components.windows(segments.len()).any(|window| {
+                    segments
+                        .iter()
+                        .zip(window)
+                        .all(|(pattern, component)| glob_match(pattern, component))
+                })
+        }
     })
+}
+
+/// Within-segment glob: only `*` (any run of characters) is supported.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    // Two-pointer greedy `*` matching.
+    let (mut p, mut t) = (0usize, 0usize);
+    let (mut star, mut backtrack) = (None, 0usize);
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == text[t] || pattern[p] == '?') {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            p += 1;
+            backtrack = t;
+        } else if let Some(star_at) = star {
+            p = star_at + 1;
+            backtrack += 1;
+            t = backtrack;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
 }
 
 fn is_regular_file(path: &Path) -> Result<bool, DiscoveryError> {
@@ -248,5 +331,47 @@ mod tests {
             files.into_iter().map(|file| file.path).collect::<Vec<_>>(),
             vec![alpha, middle, zulu]
         );
+    }
+
+    #[test]
+    fn excludes_are_component_glob_matches_not_substrings() {
+        // Regression: excludes used raw substring matching, so `exclude =
+        // ["test"]` excluded `src/contest/Main.java`.
+        let temp = TempDir::new();
+        let keep = temp.file("src/contest/Main.java");
+        let drop = temp.file("src/test/Util.java");
+
+        let files = discover_with_excludes(
+            &[ScanTarget::Directory(temp.path.clone())],
+            &["test".to_string()],
+        )
+        .expect("discovery should succeed");
+
+        assert!(files.iter().any(|f| f.path == keep));
+        assert!(!files.iter().any(|f| f.path == drop));
+    }
+
+    #[test]
+    fn excludes_match_directories_anywhere_and_glob_within_a_segment() {
+        let temp = TempDir::new();
+        let nested = temp.file("a/b/fixtures/Data.java");
+        let generated = temp.file("src/generated/Out.java");
+        let source = temp.file("src/Main.java");
+        let dotted = temp.file("app/keep.min.js");
+
+        let files = discover_with_excludes(
+            &[ScanTarget::Directory(temp.path.clone())],
+            &[
+                "/fixtures/".to_string(), // legacy spelling keeps working
+                "src/generated".to_string(),
+                "*.min.js".to_string(),
+            ],
+        )
+        .expect("discovery should succeed");
+
+        assert!(!files.iter().any(|f| f.path == nested));
+        assert!(!files.iter().any(|f| f.path == generated));
+        assert!(!files.iter().any(|f| f.path == dotted));
+        assert!(files.iter().any(|f| f.path == source));
     }
 }

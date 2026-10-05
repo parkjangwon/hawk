@@ -22,6 +22,8 @@ pub struct ReportMetadata {
     pub rule_count: usize,
     pub files_scanned: usize,
     pub files_skipped: usize,
+    /// Findings removed by inline `hawk:ignore`/`nosec` markers.
+    pub suppressed_inline: usize,
     pub duration_ms: u128,
 }
 
@@ -34,6 +36,7 @@ impl ReportMetadata {
             rule_count: result.rule_count,
             files_scanned: result.scanned_files,
             files_skipped: result.skipped_files,
+            suppressed_inline: result.suppressed_inline,
             duration_ms,
         }
     }
@@ -46,6 +49,8 @@ pub struct FindingView {
     pub severity: String,
     pub confidence: String,
     pub message: String,
+    pub description: Option<String>,
+    pub recommendation: Option<String>,
     pub file: String,
     pub line: usize,
     pub column: usize,
@@ -65,6 +70,8 @@ impl FindingView {
             severity: finding.severity.to_string(),
             confidence: finding.confidence.to_string(),
             message: finding.message.clone(),
+            description: finding.description.clone(),
+            recommendation: finding.recommendation.clone(),
             file: location.path.display().to_string(),
             line: location.start_line,
             column: location.start_column,
@@ -197,6 +204,37 @@ pub struct SarifRule {
     pub id: String,
     pub name: String,
     pub short_description: SarifMessage,
+    pub full_description: SarifMessage,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub help: Vec<SarifHelp>,
+    #[serde(skip_serializing_if = "SarifRuleProperties::is_empty")]
+    pub properties: SarifRuleProperties,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SarifHelp {
+    pub text: String,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct SarifRuleProperties {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owasp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
+}
+
+impl SarifRuleProperties {
+    fn is_empty(&self) -> bool {
+        self.cwe.is_none()
+            && self.owasp.is_none()
+            && self.severity.is_none()
+            && self.recommendation.is_none()
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -212,7 +250,18 @@ pub struct SarifResultItem {
     pub rule_id: String,
     pub level: String,
     pub message: SarifMessage,
+    /// Stable cross-run identity for consumers (GitHub Code Scanning uses
+    /// these to correlate alerts between pushes instead of recomputing its
+    /// own fingerprints).
+    #[serde(rename = "partialFingerprints")]
+    pub partial_fingerprints: SarifPartialFingerprints,
     pub locations: Vec<SarifLocation>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SarifPartialFingerprints {
+    #[serde(rename = "hawkFindingFingerprint/v1")]
+    pub hawk_fingerprint_v1: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -228,6 +277,7 @@ pub struct SarifPhysical {
 
 #[derive(Debug, serde::Serialize)]
 pub struct SarifArtifact {
+    /// A SARIF-relative URI: forward slashes, no `./` prefix, no backslashes.
     pub uri: String,
 }
 
@@ -249,7 +299,21 @@ impl SarifReporter {
                     id: finding.rule_id.clone(),
                     name: finding.rule_name.clone(),
                     short_description: SarifMessage {
+                        text: finding.message.clone(),
+                    },
+                    full_description: SarifMessage {
                         text: finding.description.clone().unwrap_or_default(),
+                    },
+                    help: finding
+                        .recommendation
+                        .as_ref()
+                        .map(|text| vec![SarifHelp { text: text.clone() }])
+                        .unwrap_or_default(),
+                    properties: SarifRuleProperties {
+                        cwe: finding.cwe.clone(),
+                        owasp: finding.owasp.clone(),
+                        severity: Some(finding.severity.to_string()),
+                        recommendation: finding.recommendation.clone(),
                     },
                 });
             }
@@ -264,10 +328,13 @@ impl SarifReporter {
                 message: SarifMessage {
                     text: f.message.clone(),
                 },
+                partial_fingerprints: SarifPartialFingerprints {
+                    hawk_fingerprint_v1: f.fingerprint.clone(),
+                },
                 locations: vec![SarifLocation {
                     physical_location: SarifPhysical {
                         artifact_location: SarifArtifact {
-                            uri: f.location.path.display().to_string(),
+                            uri: sarif_uri(&f.location.path),
                         },
                         region: SarifRegion {
                             start_line: f.location.start_line,
@@ -306,6 +373,14 @@ fn sarif_level(severity: &str) -> String {
     }
 }
 
+/// SARIF artifact URIs are relative forward-slash URIs: no `./` prefix, no
+/// backslashes.
+fn sarif_uri(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let stripped = text.strip_prefix("./").unwrap_or(&text);
+    stripped.to_string()
+}
+
 // ---------------------------------------------------------------------------
 // HTML
 // ---------------------------------------------------------------------------
@@ -332,9 +407,15 @@ impl HtmlReporter {
                 .as_deref()
                 .map(html_escape)
                 .unwrap_or_default();
+            let standards = match (&view.cwe, &view.owasp) {
+                (Some(cwe), Some(owasp)) => format!("{cwe} / {owasp}"),
+                (Some(cwe), None) => cwe.clone(),
+                (None, Some(owasp)) => owasp.clone(),
+                (None, None) => String::new(),
+            };
             let _ = writeln!(
                 body,
-                "<tr><td>{sev}</td><td><code>{rule}</code></td><td>{msg}<br><code>{snippet}</code></td><td><code>{file}:{line}:{col}</code></td><td>{name}</td></tr>",
+                "<tr><td>{sev}</td><td><code>{rule}</code></td><td>{msg}<br><code>{snippet}</code></td><td><code>{file}:{line}:{col}</code></td><td>{name}</td><td>{standards}</td></tr>",
                 sev = view.severity,
                 rule = view.rule_id,
                 msg = html_escape(&view.message),
@@ -343,6 +424,7 @@ impl HtmlReporter {
                 line = view.line,
                 col = view.column,
                 name = html_escape(&view.rule_name),
+                standards = html_escape(&standards),
             );
         }
 
@@ -366,6 +448,13 @@ impl HtmlReporter {
             duration_ms,
             now_rfc3339(),
         );
+        if result.suppressed_inline > 0 {
+            let _ = writeln!(
+                out,
+                "<p>{} finding(s) suppressed by inline hawk:ignore/nosec markers.</p>",
+                result.suppressed_inline
+            );
+        }
         let _ = writeln!(out, "<h2>Summary</h2><ul>");
         for (label, value) in [
             ("Critical", summary.critical),
@@ -403,7 +492,7 @@ impl HtmlReporter {
         let _ = writeln!(out, "<h2>Findings ({})</h2>", views.len());
         let _ = writeln!(
             out,
-            "<table><thead><tr><th>Severity</th><th>Rule</th><th>Message</th><th>Location</th><th>Name</th></tr></thead><tbody>"
+            "<table><thead><tr><th>Severity</th><th>Rule</th><th>Message</th><th>Location</th><th>Name</th><th>CWE/OWASP</th></tr></thead><tbody>"
         );
         let _ = writeln!(out, "{}", body);
         let _ = writeln!(out, "</tbody></table><hr>");
@@ -495,6 +584,7 @@ mod tests {
         ScanResult {
             discovered_files: 1,
             skipped_files: 0,
+            suppressed_inline: 0,
             issues: vec![FileIssue {
                 kind: FileIssueKind::Parse,
                 path: "Broken.java".into(),
@@ -594,6 +684,7 @@ mod tests {
         let result = ScanResult {
             discovered_files: 1,
             skipped_files: 0,
+            suppressed_inline: 0,
             issues: vec![],
             findings,
             scanned_files: 1,

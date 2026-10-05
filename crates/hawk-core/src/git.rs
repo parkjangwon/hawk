@@ -37,6 +37,11 @@ pub enum GitScope {
 
 /// Runs `git diff [--cached] --name-only -z` in `dir` and returns changed paths
 /// joined to `dir`. Names are NUL-delimited, so paths with newlines are handled.
+///
+/// For [`GitScope::Changed`], untracked (brand-new) files are included via
+/// `git ls-files --others --exclude-standard`, so a file the developer just
+/// created is scanned — exactly the case a changed-only scan exists for. The
+/// untracked listing honors `.gitignore`, mirroring git's own semantics.
 pub fn changed_files(dir: &Path, scope: GitScope) -> Result<Vec<PathBuf>, GitError> {
     let mut command = Command::new("git");
     command.arg("diff");
@@ -71,6 +76,39 @@ pub fn changed_files(dir: &Path, scope: GitScope) -> Result<Vec<PathBuf>, GitErr
         }
         rest = &rest[end + 1..];
     }
+
+    if scope == GitScope::Changed {
+        let untracked = Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard", "-z"])
+            .current_dir(dir)
+            .output()
+            .map_err(|error| GitError::Unavailable(error.to_string()))?;
+        if !untracked.status.success() {
+            return Err(GitError::NonZero(
+                String::from_utf8_lossy(&untracked.stderr)
+                    .trim()
+                    .to_string(),
+            ));
+        }
+        let mut rest = untracked.stdout.as_slice();
+        while !rest.is_empty() {
+            let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+            if end > 0 {
+                let name = String::from_utf8_lossy(&rest[..end]).to_string();
+                let path = dir.join(name);
+                if path.is_file() && !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+            if end == rest.len() {
+                break;
+            }
+            rest = &rest[end + 1..];
+        }
+    }
+
+    // Deterministic order regardless of which git command produced a path.
+    paths.sort();
     Ok(paths)
 }
 
@@ -169,6 +207,41 @@ mod tests {
         let staged_after = changed_files(&dir, GitScope::Staged).unwrap();
         assert!(staged_after.iter().any(|p| p.ends_with("B.java")));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn changed_files_includes_untracked_new_files() {
+        // Regression: `git diff --name-only` never lists untracked files, so a
+        // brand-new file with a fresh vulnerability was invisible to
+        // `hawk --changed` — the exact workflow the mode exists for.
+        let dir = git_repo();
+        fs::write(dir.join("Existing.java"), "class Existing {}\n").unwrap();
+        Command::new("git")
+            .args(["add", "Existing.java"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+
+        fs::write(dir.join("New.java"), "class New {}\n").unwrap();
+        let paths = changed_files(&dir, GitScope::Changed).expect("git should run");
+        assert!(
+            paths.iter().any(|p| p.ends_with("New.java")),
+            "untracked new file must be scanned: {paths:?}"
+        );
+
+        // gitignored files stay out of scope.
+        fs::write(dir.join(".gitignore"), "ignored.java\n").unwrap();
+        fs::write(dir.join("ignored.java"), "class Ignored {}\n").unwrap();
+        let paths = changed_files(&dir, GitScope::Changed).expect("git should run");
+        assert!(
+            !paths.iter().any(|p| p.ends_with("ignored.java")),
+            "gitignored files must not be scanned"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

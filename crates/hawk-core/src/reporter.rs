@@ -48,6 +48,18 @@ impl TerminalReporter {
             result.skipped_files,
             result.issues.len()
         );
+        if result.suppressed_inline > 0 {
+            let noun = if result.suppressed_inline == 1 {
+                "finding"
+            } else {
+                "findings"
+            };
+            let _ = writeln!(
+                output,
+                "{} {noun} suppressed by inline hawk:ignore/nosec markers",
+                result.suppressed_inline
+            );
+        }
         render_categories(&mut output, result);
 
         output
@@ -91,7 +103,14 @@ fn render_finding(output: &mut String, finding: &Finding) {
         finding.location.start_line,
         finding.location.start_column
     );
-    let _ = writeln!(output, "  {}", finding.rule_id);
+    match &finding.cwe {
+        Some(cwe) => {
+            let _ = writeln!(output, "  {} ({cwe})", finding.rule_id);
+        }
+        None => {
+            let _ = writeln!(output, "  {}", finding.rule_id);
+        }
+    }
     let _ = writeln!(output, "  {}", finding.message);
 }
 
@@ -124,6 +143,7 @@ mod tests {
         ScanResult {
             discovered_files: 1,
             skipped_files: 0,
+            suppressed_inline: 0,
             issues,
             findings,
             scanned_files: 1,
@@ -191,6 +211,7 @@ mod tests {
         let output = TerminalReporter.render(&ScanResult {
             discovered_files: 3,
             skipped_files: 0,
+            suppressed_inline: 0,
             issues: vec![],
             findings: Findings::new(),
             scanned_files: 3,
@@ -224,6 +245,7 @@ mod tests {
         let output = TerminalReporter.render(&ScanResult {
             discovered_files: 1,
             skipped_files: 0,
+            suppressed_inline: 0,
             issues: vec![],
             findings,
             scanned_files: 1,

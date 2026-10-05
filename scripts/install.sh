@@ -49,6 +49,34 @@ if command -v curl >/dev/null 2>&1; then
 else
     wget -qO "$tmp_dir/hawk.tar.gz" "$URL"
 fi
+
+# Verify the tarball against the release's SHA256SUMS (published by the
+# release workflow). A missing checksum file only happens for pre-0.4
+# releases: warn, do not fail.
+sums_url="${URL%$(basename "$URL")}/SHA256SUMS"
+if curl -fsSL "$sums_url" -o "$tmp_dir/SHA256SUMS" 2>/dev/null || \
+   wget -qO "$tmp_dir/SHA256SUMS" "$sums_url" 2>/dev/null; then
+    expected="$(grep " ${TARGET}.tar.gz\$" "$tmp_dir/SHA256SUMS" | awk '{print $1}')"
+    if [ -z "$expected" ]; then
+        echo "hawk: warning: no checksum entry for ${TARGET}.tar.gz; skipping verification" >&2
+    else
+        if command -v sha256sum >/dev/null 2>&1; then
+            actual="$(sha256sum "$tmp_dir/hawk.tar.gz" | awk '{print $1}')"
+        else
+            actual="$(shasum -a 256 "$tmp_dir/hawk.tar.gz" | awk '{print $1}')"
+        fi
+        if [ "$actual" != "$expected" ]; then
+            echo "error: checksum mismatch for ${TARGET}.tar.gz" >&2
+            echo "  expected: $expected" >&2
+            echo "  actual:   $actual" >&2
+            exit 1
+        fi
+        echo "hawk: checksum verified"
+    fi
+else
+    echo "hawk: warning: SHA256SUMS not available for this release; skipping verification" >&2
+fi
+
 tar -xzf "$tmp_dir/hawk.tar.gz" -C "$tmp_dir"
 install -m 0755 "$tmp_dir/hawk" "$INSTALL_DIR/hawk"
 

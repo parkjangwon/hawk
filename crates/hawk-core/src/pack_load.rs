@@ -58,7 +58,11 @@ struct RawRule {
 #[derive(Debug, Deserialize)]
 struct RawPattern {
     regex: String,
-    #[serde(rename = "not-regex")]
+    /// Semgrep-style negative filter. Accepts both the hyphenated canonical
+    /// spelling and the underscore alias: several community rules spell it
+    /// `not_regex`, and serde silently dropped the unknown field before the
+    /// alias existed, disabling the filter.
+    #[serde(rename = "not-regex", alias = "not_regex")]
     not_regex: Option<String>,
     fix: Option<String>,
 }
@@ -68,7 +72,7 @@ struct RawQuery {
     #[serde(rename = "tree-sitter")]
     tree_sitter: String,
     anchor: Option<String>,
-    #[serde(rename = "not-regex")]
+    #[serde(rename = "not-regex", alias = "not_regex")]
     not_regex: Option<String>,
 }
 
@@ -80,6 +84,9 @@ struct RawTaint {
     sanitizers: Vec<String>,
     #[allow(dead_code)]
     sinks: Vec<String>,
+    /// Java parameter annotations that act as sources (e.g. `@RequestParam`).
+    #[serde(default, rename = "param-annotations", alias = "param_annotations")]
+    param_annotations: Option<Vec<String>>,
 }
 
 impl RawRule {
@@ -235,6 +242,7 @@ fn parse_rule(raw: RawRule, path: PathBuf) -> Result<Rule, PackError> {
             sources: t.sources,
             sanitizers: t.sanitizers,
             sinks: t.sinks,
+            param_annotations: t.param_annotations.unwrap_or_default(),
         }),
         _ => None,
     };
@@ -293,334 +301,16 @@ fn parse_manifest_str(content: &str, path: PathBuf) -> Result<PackMeta, PackErro
     })
 }
 
-/// The built-in rule packs embedded in the binary, as (manifest, rules) pairs
-/// in a fixed order. Keep this list in sync with `rules/{java,js,python,go}`;
-/// the loader is intentionally the single source of truth.
-pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError> {
-    let packs: &[(&str, &[(&str, &str)])] = &[
-        (
-            include_str!("../rules/java/pack.toml"),
-            &[
-                (
-                    "built-in:java/java.security.runtime-exec.rule.toml",
-                    include_str!("../rules/java/java.security.runtime-exec.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.process-builder.rule.toml",
-                    include_str!("../rules/java/java.security.process-builder.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.cookie.rule.toml",
-                    include_str!("../rules/java/java.security.cookie.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.sql-injection.rule.toml",
-                    include_str!("../rules/java/java.security.sql-injection.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.command-injection.rule.toml",
-                    include_str!("../rules/java/java.security.command-injection.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.xss.rule.toml",
-                    include_str!("../rules/java/java.security.xss.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.path-traversal.rule.toml",
-                    include_str!("../rules/java/java.security.path-traversal.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.ssrf.rule.toml",
-                    include_str!("../rules/java/java.security.ssrf.rule.toml"),
-                ),
-                (
-                    "built-in:java/java.security.spring-query.rule.toml",
-                    include_str!("../rules/java/java.security.spring-query.rule.toml"),
-                ),
-            ],
-        ),
-        (
-            include_str!("../rules/js/pack.toml"),
-            &[
-                (
-                    "built-in:js/javascript.security.eval.rule.toml",
-                    include_str!("../rules/js/javascript.security.eval.rule.toml"),
-                ),
-                (
-                    "built-in:js/javascript.security.inner-html.rule.toml",
-                    include_str!("../rules/js/javascript.security.inner-html.rule.toml"),
-                ),
-                (
-                    "built-in:js/javascript.security.child-process.rule.toml",
-                    include_str!("../rules/js/javascript.security.child-process.rule.toml"),
-                ),
-                (
-                    "built-in:js/javascript.security.document-write.rule.toml",
-                    include_str!("../rules/js/javascript.security.document-write.rule.toml"),
-                ),
-                (
-                    "built-in:js/javascript.security.open-redirect.rule.toml",
-                    include_str!("../rules/js/javascript.security.open-redirect.rule.toml"),
-                ),
-            ],
-        ),
-        (
-            include_str!("../rules/python/pack.toml"),
-            &[
-                (
-                    "built-in:python/python.security.os-system.rule.toml",
-                    include_str!("../rules/python/python.security.os-system.rule.toml"),
-                ),
-                (
-                    "built-in:python/python.security.pickle.rule.toml",
-                    include_str!("../rules/python/python.security.pickle.rule.toml"),
-                ),
-                (
-                    "built-in:python/python.security.subprocess-shell.rule.toml",
-                    include_str!("../rules/python/python.security.subprocess-shell.rule.toml"),
-                ),
-                (
-                    "built-in:python/python.security.ssti.rule.toml",
-                    include_str!("../rules/python/python.security.ssti.rule.toml"),
-                ),
-                (
-                    "built-in:python/python.security.eval-exec.rule.toml",
-                    include_str!("../rules/python/python.security.eval-exec.rule.toml"),
-                ),
-                (
-                    "built-in:python/python.security.ssrf.rule.toml",
-                    include_str!("../rules/python/python.security.ssrf.rule.toml"),
-                ),
-            ],
-        ),
-        (
-            include_str!("../rules/go/pack.toml"),
-            &[
-                (
-                    "built-in:go/go.security.exec-command.rule.toml",
-                    include_str!("../rules/go/go.security.exec-command.rule.toml"),
-                ),
-                (
-                    "built-in:go/go.security.sql-injection.rule.toml",
-                    include_str!("../rules/go/go.security.sql-injection.rule.toml"),
-                ),
-                (
-                    "built-in:go/go.security.ssrf.rule.toml",
-                    include_str!("../rules/go/go.security.ssrf.rule.toml"),
-                ),
-            ],
-        ),
-        (
-            include_str!("../rules/korea/pack.toml"),
-            &[
-                (
-                    "built-in:rules/korea/korea.java.hardcoded-password.rule.toml",
-                    include_str!("../rules/korea/korea.java.hardcoded-password.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.weak-random.rule.toml",
-                    include_str!("../rules/korea/korea.java.weak-random.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.stacktrace-public.rule.toml",
-                    include_str!("../rules/korea/korea.java.stacktrace-public.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.hardcoded-key.rule.toml",
-                    include_str!("../rules/korea/korea.java.hardcoded-key.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.code-injection.rule.toml",
-                    include_str!("../rules/korea/korea.java.code-injection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.open-redirect.rule.toml",
-                    include_str!("../rules/korea/korea.java.open-redirect.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.xxe.rule.toml",
-                    include_str!("../rules/korea/korea.java.xxe.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.ldap-injection.rule.toml",
-                    include_str!("../rules/korea/korea.java.ldap-injection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.http-response-splitting.rule.toml",
-                    include_str!("../rules/korea/korea.java.http-response-splitting.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.weak-crypto-algorithm.rule.toml",
-                    include_str!("../rules/korea/korea.java.weak-crypto-algorithm.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.short-crypto-key.rule.toml",
-                    include_str!("../rules/korea/korea.java.short-crypto-key.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.weak-signature.rule.toml",
-                    include_str!("../rules/korea/korea.java.weak-signature.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.insecure-certificate-validation.rule.toml",
-                    include_str!(
-                        "../rules/korea/korea.java.insecure-certificate-validation.rule.toml"
-                    ),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.comment-sensitive-info.rule.toml",
-                    include_str!("../rules/korea/korea.java.comment-sensitive-info.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.unsigned-code-download.rule.toml",
-                    include_str!("../rules/korea/korea.java.unsigned-code-download.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.toctou.rule.toml",
-                    include_str!("../rules/korea/korea.java.toctou.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.infinite-loop.rule.toml",
-                    include_str!("../rules/korea/korea.java.infinite-loop.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.improper-exception.rule.toml",
-                    include_str!("../rules/korea/korea.java.improper-exception.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.unsafe-deserialization.rule.toml",
-                    include_str!("../rules/korea/korea.java.unsafe-deserialization.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.debug-code.rule.toml",
-                    include_str!("../rules/korea/korea.java.debug-code.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.unsafe-api.rule.toml",
-                    include_str!("../rules/korea/korea.java.unsafe-api.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.raw-socket.rule.toml",
-                    include_str!("../rules/korea/korea.java.raw-socket.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.sql-injection.rule.toml",
-                    include_str!("../rules/korea/korea.js.sql-injection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.path-traversal.rule.toml",
-                    include_str!("../rules/korea/korea.js.path-traversal.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.xss-react.rule.toml",
-                    include_str!("../rules/korea/korea.js.xss-react.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.command-injection.rule.toml",
-                    include_str!("../rules/korea/korea.js.command-injection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.xxe.rule.toml",
-                    include_str!("../rules/korea/korea.js.xxe.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.ldap-injection.rule.toml",
-                    include_str!("../rules/korea/korea.js.ldap-injection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.ssrf.rule.toml",
-                    include_str!("../rules/korea/korea.js.ssrf.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.weak-crypto.rule.toml",
-                    include_str!("../rules/korea/korea.js.weak-crypto.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.weak-random.rule.toml",
-                    include_str!("../rules/korea/korea.js.weak-random.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.infinite-loop.rule.toml",
-                    include_str!("../rules/korea/korea.js.infinite-loop.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.error-message-info.rule.toml",
-                    include_str!("../rules/korea/korea.js.error-message-info.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.improper-exception.rule.toml",
-                    include_str!("../rules/korea/korea.js.improper-exception.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.debug-code.rule.toml",
-                    include_str!("../rules/korea/korea.js.debug-code.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.sql-injection.rule.toml",
-                    include_str!("../rules/korea/korea.py.sql-injection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.path-traversal.rule.toml",
-                    include_str!("../rules/korea/korea.py.path-traversal.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.xxe.rule.toml",
-                    include_str!("../rules/korea/korea.py.xxe.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.weak-crypto.rule.toml",
-                    include_str!("../rules/korea/korea.py.weak-crypto.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.weak-random.rule.toml",
-                    include_str!("../rules/korea/korea.py.weak-random.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.toctou.rule.toml",
-                    include_str!("../rules/korea/korea.py.toctou.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.infinite-loop.rule.toml",
-                    include_str!("../rules/korea/korea.py.infinite-loop.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.error-message-info.rule.toml",
-                    include_str!("../rules/korea/korea.py.error-message-info.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.improper-exception.rule.toml",
-                    include_str!("../rules/korea/korea.py.improper-exception.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.unsafe-deserialization.rule.toml",
-                    include_str!("../rules/korea/korea.py.unsafe-deserialization.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.js.xss.rule.toml",
-                    include_str!("../rules/korea/korea.js.xss.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.xss.rule.toml",
-                    include_str!("../rules/korea/korea.py.xss.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.java.reflection.rule.toml",
-                    include_str!("../rules/korea/korea.java.reflection.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.unsalted-hash.rule.toml",
-                    include_str!("../rules/korea/korea.py.unsalted-hash.rule.toml"),
-                ),
-                (
-                    "built-in:rules/korea/korea.py.plaintext-transport.rule.toml",
-                    include_str!("../rules/korea/korea.py.plaintext-transport.rule.toml"),
-                ),
-            ],
-        ),
-    ];
+// The built-in rule packs embedded in the binary, as (manifest, rules) pairs
+// in a fixed (alphabetical) order. GENERATED by `build.rs` from the
+// `rules/` directory — the directory is the single source of truth, so a
+// rule file present on disk is always compiled into the binary and covered
+// by the fixture gate.
+include!(concat!(env!("OUT_DIR"), "/builtin_packs.rs"));
 
-    let mut loaded = Vec::with_capacity(packs.len());
-    for (manifest, files) in packs {
+pub fn built_in_packs() -> Result<Vec<(PackMeta, Vec<CompiledRule>)>, PackError> {
+    let mut loaded = Vec::with_capacity(BUILT_IN_PACKS.len());
+    for (manifest, files) in BUILT_IN_PACKS {
         let meta = parse_manifest_str(manifest, PathBuf::from("built-in"))?;
         let mut rules = Vec::with_capacity(files.len());
         for (path, content) in *files {

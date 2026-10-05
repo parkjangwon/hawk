@@ -71,9 +71,10 @@ hawk ./src/UserService.java
 Git-oriented modes make Hawk fast for every-day development and useful alongside Git and AI coding agents:
 
 ```bash
-hawk --changed           # working-tree changes vs the index
+hawk --changed           # working-tree changes + untracked new files
 hawk --staged            # staged changes
 hawk --fail-on-severity high .   # exit 2 only for HIGH+ findings (CI-friendly)
+hawk --min-severity medium .     # only report findings at/above MEDIUM
 hawk --format sarif -o report.sarif .
 hawk --format html -o report.html .
 ```
@@ -86,9 +87,10 @@ the scan ran and what it covered:
 2 findings in 144 file(s)
 27 file(s) skipped (0 issue(s) resolved by ignoring them
 
-Categories (24):
+Categories (25):
   availability:                  3 rules, no findings
   command-injection:             8 rules, no findings
+  secrets:                       7 rules, no findings
   sql-injection:                 5 rules, 1 finding
   xss:                           7 rules, no findings
   ...
@@ -104,6 +106,24 @@ hawk rule validate ./my-pack
 hawk baseline create | status
 hawk config
 ```
+
+### Suppressing findings inline
+
+When a finding is a false positive (or an accepted risk), suppress it in the
+source instead of a repo-wide config:
+
+```java
+Runtime.getRuntime().exec("df -h"); // hawk:ignore
+String token = env("GITHUB_TOKEN"); // hawk:ignore secrets.generic-credential
+password = os.environ.get("DB_PASS")  # nosec
+```
+
+- `hawk:ignore` (or the `nosec` alias) on the finding's line — or the line
+  above it — suppresses every rule on that line.
+- Append rule ids (`hawk:ignore java.security.cookie`) to suppress only those
+  rules.
+- Suppressed findings are counted in the report (`N findings suppressed by
+  inline markers`), so silence stays auditable.
 
 Cross-file taint analysis runs during normal scans: the project-wide symbol
 and call-edge index resolves calls to their definitions, so a sink inside a
@@ -215,11 +235,9 @@ Policy
 
 Examples of Rule Packs:
 
-- Korea / Korean secure-coding rules
-- OWASP mappings
-- CWE mappings
-- Java security
-- JavaScript / TypeScript security
+- Korea / Korean secure-coding rules (built-in)
+- Secrets / hardcoded credential detection (built-in: AWS, GitHub, Google, Stripe, Slack, private keys, generic)
+- Java security, JavaScript / TypeScript security, Python security, Go security (built-in)
 - Framework-specific rules
 - Organization/company policies
 - Community rules
@@ -455,11 +473,12 @@ The goal is a **small, fast, local, free, extensible security analyzer for devel
 
 Hawk is **feature-complete against the ROADMAP** (Phases 0–9 implemented): a single Rust binary that scans a
 project with `hawk .` and produces fast, deterministic reports in terminal, JSON, SARIF, or HTML formats.
-Rule Packs are versionable TOML data (with tree-sitter query and taint capabilities), the engine ships
-Java/JavaScript/TypeScript/Python/Go parsers, and Git-aware (`--changed`/`--staged`), incremental-cache,
-baseline, and `--fail-on-severity` workflows make it usable in CI. Some deeper integrations (a standalone
-TUI, an independently published Korean rule pack, PDF output, prefix wide performance budgets) remain future
-work; see [ROADMAP.md](ROADMAP.md) for the exact checklist.
+Rule Packs are versioned TOML data (pattern, tree-sitter query, and taint capabilities; the embedded set is
+generated from `rules/` by `build.rs`), the engine ships Java/JavaScript/TypeScript/TSX/Python/Go parsers with
+cross-file taint analysis (parameterization-aware, framework entry-point sources), and Git-aware
+(`--changed`/`--staged`, untracked-aware), incremental-cache, inline-suppression, baseline, and
+`--fail-on-severity`/`--min-severity` workflows make it usable in CI. Some deeper integrations (a standalone
+TUI, an independently published Korean rule pack, PDF output) remain future work; see [ROADMAP.md](ROADMAP.md).
 
 ## Status
 

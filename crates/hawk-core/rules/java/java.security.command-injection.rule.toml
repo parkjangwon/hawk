@@ -10,6 +10,7 @@ cwe = "CWE-78"
 owasp = "A03:2021"
 
 [taint]
+param-annotations = ["@RequestParam", "@PathVariable", "@RequestHeader", "@RequestBody"]
 sources = ["getParameter", "getHeader"]
 sanitizers = ["sanitize", "escapeCommand"]
 sinks = ["Runtime.getRuntime().exec", ".exec(", "ProcessBuilder"]

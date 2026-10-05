@@ -10,6 +10,7 @@ cwe = "CWE-79"
 owasp = "A03:2021"
 
 [taint]
+param-annotations = ["@RequestParam", "@PathVariable", "@RequestHeader", "@RequestBody"]
 sources = ["getParameter", "getHeader"]
 sanitizers = ["escapeHtml", "encodeHtml"]
-sinks = ["response.getWriter().write", ".write(", ".print(", "out.print"]
+sinks = ["getWriter().write(", "getWriter().print(", "getWriter().println("]

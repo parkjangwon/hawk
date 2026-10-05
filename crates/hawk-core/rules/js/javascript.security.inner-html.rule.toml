@@ -10,4 +10,4 @@ cwe = "CWE-79"
 owasp = "A03:2021"
 
 [pattern]
-regex = "innerHTML\\s*=\\s*[^\"']"
+regex = "innerHTML\\s*=\\s*[^\"'\\s]"

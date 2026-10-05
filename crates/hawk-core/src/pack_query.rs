@@ -28,6 +28,7 @@ pub(crate) fn execute_query<'tree>(
         Language::TypeScript => {
             tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT)
         }
+        Language::Tsx => tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TSX),
         Language::Python => tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
         Language::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
         Language::Unknown => return Err("unsupported language".into()),

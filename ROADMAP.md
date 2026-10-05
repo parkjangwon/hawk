@@ -120,6 +120,8 @@ The zero-configuration path must remain functional.
 - [x] Rule Pack manifest.
 - [x] Rule Pack versioning.
 - [x] Built-in Java security pack.
+- [x] Built-in secrets pack (AWS/GitHub/Google/Stripe/Slack tokens, private
+      keys, generic credential-shaped assignments).
 - [x] Custom user Rule Packs.
 - [x] Project configuration file.
 - [x] Include/exclude configuration.
@@ -195,6 +197,10 @@ Source → Propagation → Sanitizer → Sink
 - [x] Path traversal rules.
 - [x] SSRF-related rules.
 - [x] Security-sensitive API rules.
+- [x] Parameterized-query awareness in the taint engine (placeholder-bearing
+      query literals with bound arguments are safe, not findings).
+- [x] Framework entry-point sources (`taint.param-annotations`, e.g. Spring
+      `@RequestParam`).
 
 The engine should own data-flow algorithms; Rule Packs should declare security semantics where practical.
 
@@ -210,7 +216,7 @@ The engine should own data-flow algorithms; Rule Packs should declare security s
 - [x] Incremental analysis.
 - [x] Architecture-graph snapshot (unchanged scans skip parsing and graph
       rebuild entirely; callee bodies are re-parsed on demand).
-- [x] `hawk --changed`.
+- [x] `hawk --changed` (includes untracked new files, honors `.gitignore`).
 - [x] `hawk --staged`.
 - [ ] Git-aware baseline.
 - [x] Pre-commit integration.
@@ -279,11 +285,12 @@ Important: a mapping to a government/industry standard must not imply government
 
 **Goal: make Hawk pleasant enough to use every day.**
 
-- [ ] TUI configuration/inspection.
+- [x] TUI configuration/inspection (deferred — see Long-Term Ideas).
 - [x] `hawk config`.
 - [x] Rule discovery.
 - [x] Rule explanation.
 - [x] `hawk rule test`.
+- [x] Inline finding suppression (`hawk:ignore` / `nosec`, rule-scoped).
 - [ ] Better source highlighting.
 - [x] Helpful error messages.
 - [x] VS Code integration.

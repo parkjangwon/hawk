@@ -10,4 +10,4 @@ cwe = "CWE-78"
 owasp = "A03:2021"
 
 [pattern]
-regex = "Runtime\\.getRuntime\\(\\)\\.exec"
+regex = "Runtime\\.getRuntime\\(\\)\\.exec\\s*\\(\\s*[^\"\\s)]"

@@ -74,6 +74,7 @@ impl TreeSitterParser {
             Language::TypeScript => {
                 tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT)
             }
+            Language::Tsx => tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TSX),
             Language::Python => tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
             Language::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
             Language::Unknown => {
@@ -110,9 +111,9 @@ pub struct ParserRegistry {
     java: TreeSitterParser,
     javascript: TreeSitterParser,
     typescript: TreeSitterParser,
+    tsx: TreeSitterParser,
     python: TreeSitterParser,
     go: TreeSitterParser,
-    // TSX reuses the TypeScript grammar; routed via language() checks.
 }
 
 impl Default for ParserRegistry {
@@ -126,6 +127,9 @@ impl Default for ParserRegistry {
             },
             typescript: TreeSitterParser {
                 language: Language::TypeScript,
+            },
+            tsx: TreeSitterParser {
+                language: Language::Tsx,
             },
             python: TreeSitterParser {
                 language: Language::Python,
@@ -143,6 +147,7 @@ impl ParserRegistry {
             Language::Java => Some(&self.java as &dyn Parser),
             Language::JavaScript => Some(&self.javascript as &dyn Parser),
             Language::TypeScript => Some(&self.typescript as &dyn Parser),
+            Language::Tsx => Some(&self.tsx as &dyn Parser),
             Language::Python => Some(&self.python as &dyn Parser),
             Language::Go => Some(&self.go as &dyn Parser),
             Language::Unknown => None,
@@ -292,5 +297,20 @@ mod tests {
             error,
             ParseError::InvalidSource("source contains NUL byte".into())
         );
+    }
+    #[test]
+    fn tsx_jsx_parses_without_error_nodes() {
+        // Regression: .tsx used to be parsed with the plain TypeScript
+        // grammar, producing error nodes and degraded scans for every React
+        // file. The dedicated TSX grammar must parse JSX cleanly.
+        let parser = TreeSitterParser {
+            language: Language::Tsx,
+        };
+        let tree = parser
+            .parse("export function Item({ html }: { html: string }) {\n  return <div dangerouslySetInnerHTML={{ __html: html }} />;\n}")
+            .expect("tsx should parse");
+
+        assert_eq!(tree.root_kind(), "program");
+        assert!(!tree.has_error(), "JSX must parse with the TSX grammar");
     }
 }

@@ -10,6 +10,7 @@ cwe = "CWE-918"
 owasp = "A10:2021"
 
 [taint]
+param-annotations = ["@RequestParam", "@PathVariable", "@RequestHeader", "@RequestBody"]
 sources = ["getParameter", "getHeader"]
 sanitizers = ["validateUrl", "isAllowedHost"]
 sinks = ["URL(", ".openConnection()", "HttpURLConnection", "OkHttpClient"]

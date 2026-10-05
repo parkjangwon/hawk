@@ -85,8 +85,13 @@ impl Cache {
             .join(format!("{}.cache.json", cache_key))
     }
 
-    pub fn get(&self, source_path: &Path, source_hash: &str) -> Option<Vec<Finding>> {
-        let cache_key = cache_key(&self.namespace, source_path, source_hash);
+    pub fn get(
+        &self,
+        scope_id: &str,
+        source_path: &Path,
+        source_hash: &str,
+    ) -> Option<Vec<Finding>> {
+        let cache_key = cache_key(&self.namespace, scope_id, source_path, source_hash);
         let path = self.path_for(&cache_key);
         let content = std::fs::read_to_string(&path).ok()?;
         let entry: CacheEntry = serde_json::from_str(&content).ok()?;
@@ -101,6 +106,7 @@ impl Cache {
 
     pub fn put(
         &self,
+        scope_id: &str,
         source_path: &Path,
         source_hash: &str,
         findings: &Findings,
@@ -111,7 +117,7 @@ impl Cache {
             source_path: source_path.to_string_lossy().into_owned(),
             findings: findings.iter().cloned().collect(),
         };
-        let cache_key = cache_key(&self.namespace, source_path, source_hash);
+        let cache_key = cache_key(&self.namespace, scope_id, source_path, source_hash);
         let path = self.path_for(&cache_key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CacheError {
@@ -163,13 +169,62 @@ impl Cache {
             message: format!("unable to write graph snapshot: {e}"),
         })
     }
+
+    /// Removes per-file cache entries older than `max_age`. The cache used to
+    /// grow without bound — every historical version of every edited file
+    /// left an entry behind. Best-effort pruning keyed on the entry's write
+    /// time; a pruned hot entry simply costs one re-analysis. Returns how
+    /// many entries were removed.
+    pub fn prune_older_than(&self, max_age: std::time::Duration) -> usize {
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|now| now.saturating_sub(max_age))
+            .unwrap_or_default();
+        let mut removed = 0usize;
+        let Ok(shards) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+        for shard in shards.flatten() {
+            if !shard.path().is_dir() {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(shard.path()) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_entry = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".cache.json"));
+                if !is_entry {
+                    continue;
+                }
+                let stale = entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .is_some_and(|age| age < cutoff);
+                if stale && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        removed
+    }
 }
 
-fn cache_key(namespace: &str, path: &Path, source_hash: &str) -> String {
+/// The cache key binds to (schema, scope, file, content). `scope_id` is the
+/// hash of the whole scanned file set: cross-file analysis makes a file's
+/// findings depend on other files, so a cached result must never be replayed
+/// against a different or changed scope.
+fn cache_key(namespace: &str, scope_id: &str, path: &Path, source_hash: &str) -> String {
     hash_bytes(
         format!(
-            "{}\\0{}\\0{}",
+            "{}\\0{}\\0{}\\0{}",
             namespace,
+            scope_id,
             path.to_string_lossy(),
             source_hash
         )
@@ -229,8 +284,12 @@ mod tests {
         let h = hash_bytes(b"class A {}");
 
         let path = Path::new("A.java");
-        cache.put(path, &h, &findings).expect("put should succeed");
-        let got = cache.get(path, &h).expect("same hash should hit cache");
+        cache
+            .put("scope", path, &h, &findings)
+            .expect("put should succeed");
+        let got = cache
+            .get("scope", path, &h)
+            .expect("same hash should hit cache");
 
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].rule_id, "rule.a");
@@ -246,10 +305,10 @@ mod tests {
         let hash = hash_bytes(b"same source");
 
         cache
-            .put(Path::new("A.java"), &hash, &findings)
+            .put("scope", Path::new("A.java"), &hash, &findings)
             .expect("first put should succeed");
-        assert!(cache.get(Path::new("A.java"), &hash).is_some());
-        assert!(cache.get(Path::new("B.java"), &hash).is_none());
+        assert!(cache.get("scope", Path::new("A.java"), &hash).is_some());
+        assert!(cache.get("scope", Path::new("B.java"), &hash).is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -262,10 +321,10 @@ mod tests {
         findings.push(sample_finding());
         let path = Path::new("A.java");
         cache
-            .put(path, &hash_bytes(b"old"), &findings)
+            .put("scope", path, &hash_bytes(b"old"), &findings)
             .expect("put should succeed");
 
-        assert!(cache.get(path, &hash_bytes(b"new")).is_none());
+        assert!(cache.get("scope", path, &hash_bytes(b"new")).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -273,5 +332,48 @@ mod tests {
     fn hash_is_stable_and_content_sensitive() {
         assert_eq!(hash_bytes(b"abc"), hash_bytes(b"abc"));
         assert_ne!(hash_bytes(b"abc"), hash_bytes(b"abd"));
+    }
+    #[test]
+    fn prune_removes_only_stale_entries() {
+        use std::time::Duration;
+        let root = temp_root();
+        let cache = Cache::new(root.clone());
+        let mut findings = Findings::new();
+        findings.push(sample_finding());
+        let path = Path::new("A.java");
+
+        cache
+            .put("scope", path, &hash_bytes(b"v1"), &findings)
+            .unwrap();
+        // Zero max-age prunes everything that has a modification time in the
+        // past; the entry just written qualifies.
+        assert_eq!(cache.prune_older_than(Duration::ZERO), 1);
+        assert!(cache.get("scope", path, &hash_bytes(b"v1")).is_none());
+
+        // A generous max-age keeps fresh entries.
+        cache
+            .put("scope", path, &hash_bytes(b"v2"), &findings)
+            .unwrap();
+        assert_eq!(cache.prune_older_than(Duration::from_secs(3600)), 0);
+        assert!(cache.get("scope", path, &hash_bytes(b"v2")).is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn a_different_scope_never_hits() {
+        // Regression: cross-file analysis makes a file's findings depend on
+        // the whole scanned file set. The cache used to key on (path, hash)
+        // only, so cached "no findings" from a single-file scan was replayed
+        // when the same file was scanned together with its callee.
+        let root = temp_root();
+        let cache = Cache::new(root.clone());
+        let path = Path::new("A.java");
+        let h = hash_bytes(b"class A {}");
+
+        cache.put("scope:one", path, &h, &Findings::new()).unwrap();
+        assert!(cache.get("scope:one", path, &h).is_some());
+        assert!(cache.get("scope:two", path, &h).is_none());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

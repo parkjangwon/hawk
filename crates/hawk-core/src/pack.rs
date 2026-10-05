@@ -564,6 +564,10 @@ impl PackRegistry {
                         material.push_str(sink);
                         material.push('\0');
                     }
+                    for annotation in &taint.param_annotations {
+                        material.push_str(annotation);
+                        material.push('\0');
+                    }
                 }
             }
         }

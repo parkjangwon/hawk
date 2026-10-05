@@ -22,6 +22,10 @@ pub struct TaintConfig {
     pub sources: Vec<String>,
     pub sanitizers: Vec<String>,
     pub sinks: Vec<String>,
+    /// Java parameter annotations that turn a method parameter into a source
+    /// (framework-aware entry points, e.g. Spring's `@RequestParam`). The
+    /// engine taints such parameters on method entry. Empty = opted out.
+    pub param_annotations: Vec<String>,
 }
 
 /// A single taint finding produced by the engine, before it is merged into the
@@ -36,6 +40,9 @@ pub struct TaintFinding {
     pub tainted: String,
     /// The sink expression that was hit.
     pub sink: String,
+    /// The line where the tainted data entered the flow (the source call),
+    /// when the engine could attribute it. Remediation starts here.
+    pub source_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -63,11 +70,18 @@ pub fn to_finding(
     let mut finding = Finding::new(
         metadata.rule_id,
         metadata.severity,
-        format!(
-            "Tainted data from {src} reached sink {sink}.",
-            src = taint.tainted,
-            sink = taint.sink,
-        ),
+        match taint.source_line {
+            Some(source_line) => format!(
+                "Tainted data from {src} (source at line {source_line}) reached sink {sink}.",
+                src = taint.tainted,
+                sink = taint.sink,
+            ),
+            None => format!(
+                "Tainted data from {src} reached sink {sink}.",
+                src = taint.tainted,
+                sink = taint.sink,
+            ),
+        },
         SourceLocation {
             path: path.to_path_buf(),
             start_byte: taint.start_byte,
@@ -122,6 +136,7 @@ mod tests {
             sources: vec!["getParameter".into()],
             sanitizers: vec!["escapeSql".into()],
             sinks: vec![".executeQuery(".into(), ".execute(".into()],
+            param_annotations: Vec::new(),
         }
     }
 
@@ -197,6 +212,7 @@ class X {
 "#;
         let config = TaintConfig {
             sinks: vec!["executeQuery".into()],
+            param_annotations: Vec::new(),
             sanitizers: vec!["escapeSql".into()],
             sources: vec!["getParameter".into()],
         };
@@ -330,6 +346,7 @@ el.outerHTML = build("x", { q });
             sources: vec!["req.query".into()],
             sanitizers: vec![],
             sinks: vec![".outerHTML".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::JavaScript);
@@ -353,6 +370,7 @@ el.outerHTML = build("x", { q });
             sources: vec!["req.query".into()],
             sanitizers: vec![],
             sinks: vec![".outerHTML".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::JavaScript);
@@ -370,6 +388,7 @@ el.outerHTML = build("x", { q });
             sources: vec!["request.args".into()],
             sanitizers: vec![],
             sinks: vec!["mark_safe(".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::Python);
@@ -485,6 +504,7 @@ class X {
             sources: vec!["request.args".into()],
             sanitizers: vec!["escape".into()],
             sinks: vec!["mark_safe(".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::Python);
@@ -513,6 +533,7 @@ export function handler(req: Request, res: Response) {
             sources: vec!["req.params".into()],
             sanitizers: vec![],
             sinks: vec!["res.send(".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::TypeScript);
@@ -545,6 +566,7 @@ export function handler(req: Request, res: Response) {
             sources: vec!["req.query".into()],
             sanitizers: vec!["escape(".into()],
             sinks: vec!["res.send(".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::TypeScript);
@@ -584,6 +606,7 @@ el.outerHTML = `<div>${q}</div>`;
             sources: vec!["req.query".into()],
             sanitizers: vec![],
             sinks: vec![".outerHTML".into()],
+            param_annotations: Vec::new(),
         };
 
         let findings = analyze(&tree, source, &config, Language::JavaScript);
@@ -904,5 +927,180 @@ class Pair {
             findings[0].sink.contains("executeQuery"),
             "finding should name the sink call"
         );
+    }
+    // ---------- regressions: argument binding, parameterized queries,
+    // framework sources, source attribution ----------
+
+    #[test]
+    fn tainted_second_argument_reaches_callee_sink() {
+        // Regression: bind_params used to stop at the first untainted
+        // argument, so f("const", tainted) missed the flow entirely.
+        let caller = r#"
+class QueryCaller {
+    void handle(QueryService service, javax.servlet.http.HttpServletRequest req) {
+        service.runQuery("profile", req.getParameter("uid"), null);
+    }
+}
+"#;
+        let service = r#"
+class QueryService {
+    void runQuery(String label, String userId, java.sql.Statement st) {
+        st.executeQuery("SELECT * FROM users WHERE name='" + label + "' AND id=" + userId);
+    }
+}
+"#;
+        let graph = crate::code_graph::CodeGraph::build(vec![
+            indexed_file("QueryCaller.java", Language::Java, caller),
+            indexed_file("QueryService.java", Language::Java, service),
+        ]);
+        let parser = TreeSitterParser {
+            language: Language::Java,
+        };
+        let tree = parser.parse(caller).unwrap();
+        let findings = crate::taint::analyze_with_graph(
+            &tree,
+            caller,
+            &sqli_config(),
+            Language::Java,
+            Some(&graph),
+            Some(std::path::Path::new("QueryCaller.java")),
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "a tainted later argument must still bind to the callee parameter"
+        );
+    }
+
+    #[test]
+    fn parameterized_query_binding_is_not_a_finding() {
+        // Regression: db.Query("SELECT ... WHERE id = ?", id) is the
+        // recommended safe form and must not be reported.
+        let source = r#"
+func findBad(db *sql.DB) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        id := r.FormValue("id")
+        db.Query("SELECT * FROM users WHERE id = ?", id)
+    }
+}
+"#;
+        let parser = TreeSitterParser {
+            language: Language::Go,
+        };
+        let tree = parser.parse(source).expect("go should parse");
+        let config = TaintConfig {
+            sources: vec!["FormValue".into()],
+            sanitizers: vec![],
+            sinks: vec!["db.Query(".into()],
+            param_annotations: Vec::new(),
+        };
+        let findings = analyze(&tree, source, &config, Language::Go);
+        assert!(
+            findings.is_empty(),
+            "parameterized binding must be safe, got {:?}",
+            findings
+        );
+    }
+
+    #[test]
+    fn concatenated_query_with_placeholder_elsewhere_still_fires() {
+        // A placeholder elsewhere does not rescue concatenation into the
+        // query text itself.
+        let source = r#"
+func findBad(db *sql.DB) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        id := r.FormValue("id")
+        db.Query("SELECT * FROM users WHERE name = '" + id + "' ORDER BY ?")
+    }
+}
+"#;
+        let parser = TreeSitterParser {
+            language: Language::Go,
+        };
+        let tree = parser.parse(source).expect("go should parse");
+        let config = TaintConfig {
+            sources: vec!["FormValue".into()],
+            sanitizers: vec![],
+            sinks: vec!["db.Query(".into()],
+            param_annotations: Vec::new(),
+        };
+        let findings = analyze(&tree, source, &config, Language::Go);
+        assert_eq!(findings.len(), 1, "concatenation into the query is unsafe");
+    }
+
+    #[test]
+    fn spring_request_param_annotation_is_a_source() {
+        let source = r#"
+class OrderController {
+    Order find(@RequestParam String orderId, java.sql.Statement st) throws SQLException {
+        String sql = "SELECT * FROM orders WHERE id = '" + orderId + "'";
+        ResultSet rs = st.executeQuery(sql);
+        rs.next();
+        return map(rs);
+    }
+}
+"#;
+        let tree = parse(source);
+        let mut config = sqli_config();
+        config.param_annotations = vec!["@RequestParam".into(), "@PathVariable".into()];
+        let findings = analyze_java(&tree, source, &config);
+        assert_eq!(
+            findings.len(),
+            1,
+            "annotated Spring parameters must act as taint sources"
+        );
+    }
+
+    #[test]
+    fn annotated_param_without_configured_annotation_stays_clean() {
+        let source = r#"
+class OrderController {
+    Order find(@RequestParam String orderId, java.sql.Statement st) {
+        String sql = "SELECT * FROM orders WHERE id = '" + orderId + "'";
+        st.executeQuery(sql);
+        return null;
+    }
+}
+"#;
+        let tree = parse(source);
+        // No param_annotations configured: the annotation is not a source.
+        let findings = analyze_java(&tree, source, &sqli_config());
+        assert!(findings.is_empty(), "opt-in semantics must hold");
+    }
+
+    #[test]
+    fn finding_reports_the_source_line() {
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        String id = req.getParameter("id");
+        String sql = "SELECT * FROM users WHERE id = " + id;
+        st.executeQuery(sql);
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].source_line,
+            Some(4),
+            "the engine must attribute the flow entry line"
+        );
+    }
+
+    #[test]
+    fn direct_source_in_sink_reports_its_own_line() {
+        let source = r#"
+class X {
+    void m(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) {
+        st.executeQuery(req.getParameter("q"));
+    }
+}
+"#;
+        let tree = parse(source);
+        let findings = analyze_java(&tree, source, &sqli_config());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].source_line, Some(4));
     }
 }

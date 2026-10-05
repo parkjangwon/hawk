@@ -5,6 +5,10 @@ pub enum Language {
     Java,
     JavaScript,
     TypeScript,
+    /// JSX-flavored TypeScript (`.tsx`). Uses the dedicated tree-sitter TSX
+    /// grammar: parsing JSX with the plain TypeScript grammar produces error
+    /// nodes, which degraded every React scan.
+    Tsx,
     Python,
     Go,
     Unknown,
@@ -15,11 +19,22 @@ impl Language {
         match path.extension().and_then(|extension| extension.to_str()) {
             Some("java") => Self::Java,
             Some("js" | "mjs" | "cjs") => Self::JavaScript,
-            Some("ts" | "mts" | "cts" | "tsx") => Self::TypeScript,
+            Some("ts" | "mts" | "cts") => Self::TypeScript,
+            Some("tsx") => Self::Tsx,
             Some("py" | "pyw") => Self::Python,
             Some("go") => Self::Go,
             _ => Self::Unknown,
         }
+    }
+
+    /// Whether a rule declaring `languages` runs against a file of language
+    /// `file`. TSX files are analyzed by rules declaring TypeScript or
+    /// JavaScript (the React ecosystem is covered by both).
+    pub fn rule_applies_to(languages: &[Language], file: Language) -> bool {
+        languages.contains(&file)
+            || (file == Language::Tsx
+                && (languages.contains(&Language::TypeScript)
+                    || languages.contains(&Language::JavaScript)))
     }
 }
 
@@ -35,8 +50,9 @@ mod tests {
             Language::from_path(Path::new("app.js")),
             Language::JavaScript
         );
+        assert_eq!(Language::from_path(Path::new("app.tsx")), Language::Tsx);
         assert_eq!(
-            Language::from_path(Path::new("app.tsx")),
+            Language::from_path(Path::new("app.ts")),
             Language::TypeScript
         );
         assert_eq!(
@@ -61,5 +77,17 @@ mod tests {
             Language::from_path(Path::new("Main.JAVA")),
             Language::Unknown
         );
+    }
+    #[test]
+    fn tsx_rules_match_typescript_and_javascript_rule_sets() {
+        let js_only = [Language::JavaScript];
+        let ts_only = [Language::TypeScript];
+        let java_only = [Language::Java];
+        assert!(Language::rule_applies_to(&js_only, Language::Tsx));
+        assert!(Language::rule_applies_to(&ts_only, Language::Tsx));
+        assert!(!Language::rule_applies_to(&java_only, Language::Tsx));
+        // Plain TypeScript files do not inherit JavaScript-only rules.
+        assert!(!Language::rule_applies_to(&js_only, Language::TypeScript));
+        assert!(Language::rule_applies_to(&java_only, Language::Java));
     }
 }

@@ -86,7 +86,7 @@ pub fn analyze_java(tree: &SyntaxTree, source: &str, config: &TaintConfig) -> Ve
 pub(crate) fn method_like_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Java => &["method_declaration", "constructor_declaration"],
-        Language::JavaScript | Language::TypeScript => &[
+        Language::JavaScript | Language::TypeScript | Language::Tsx => &[
             "function_declaration",
             "function_expression",
             "arrow_function",
@@ -100,7 +100,7 @@ pub(crate) fn method_like_kinds(language: Language) -> &'static [&'static str] {
 
 fn declaration_kinds(language: Language) -> &'static [&'static str] {
     match language {
-        Language::JavaScript | Language::TypeScript => {
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
             &["lexical_declaration", "variable_declaration"]
         }
         Language::Go => &["var_spec"],
@@ -124,7 +124,7 @@ fn loop_kinds(language: Language) -> &'static [&'static str] {
             "for_statement",
             "enhanced_for_statement",
         ],
-        Language::JavaScript | Language::TypeScript => &[
+        Language::JavaScript | Language::TypeScript | Language::Tsx => &[
             "while_statement",
             "do_statement",
             "for_statement",
@@ -139,7 +139,7 @@ fn loop_kinds(language: Language) -> &'static [&'static str] {
 pub(crate) fn call_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Java => &["method_invocation", "object_creation_expression"],
-        Language::JavaScript | Language::TypeScript => &["call_expression"],
+        Language::JavaScript | Language::TypeScript | Language::Tsx => &["call_expression"],
         Language::Python => &["call"],
         Language::Go => &["call_expression"],
         Language::Unknown => &[],
@@ -167,6 +167,9 @@ struct State<'a> {
     /// Variables assigned since the current branch/loop scope began. Used by
     /// the branch join to distinguish "reassigned clean" from "never touched".
     touched: HashSet<String>,
+    /// Tainted variable → the 1-based line where the taint entered (the source
+    /// call site), so findings can point at the remediation entry point.
+    origins: HashMap<String, usize>,
     findings: Vec<TaintFinding>,
     /// Functions declared in the analyzed file, keyed by name. Enables
     /// intra-file interprocedural taint propagation of return values.
@@ -193,6 +196,7 @@ impl<'a> State<'a> {
             node_cache: HashMap::new(),
             tainted: HashSet::new(),
             touched: HashSet::new(),
+            origins: HashMap::new(),
             findings: Vec::new(),
             methods: HashMap::new(),
         }
@@ -267,15 +271,22 @@ impl<'a> State<'a> {
         out
     }
 
-    fn walk(&mut self, node: AstNode<'_>) {
+    fn walk(&mut self, node: AstNode<'a>) {
         // Taint is intraprocedural. Save and restore state around each function
         // so a tainted variable in one function cannot leak into a sibling.
         if method_like_kinds(self.language).contains(&node.kind()) {
             let saved = self.tainted.clone();
+            let saved_origins = self.origins.clone();
+            // Framework entry points: parameters carrying a configured
+            // annotation (e.g. Spring `@RequestParam`) start out tainted.
+            if self.language == Language::Java && !self.config.param_annotations.is_empty() {
+                self.taint_annotated_params(node);
+            }
             for child in node.children() {
                 self.walk(child);
             }
             self.tainted = saved;
+            self.origins = saved_origins;
             return;
         }
 
@@ -311,7 +322,7 @@ impl<'a> State<'a> {
     /// pre-branch state and merge with a union at the join, so a variable
     /// tainted in one branch is not erased by the other branch (or by source
     /// order).
-    fn walk_if(&mut self, node: AstNode<'_>) {
+    fn walk_if(&mut self, node: AstNode<'a>) {
         let entry = self.tainted.clone();
         let consequence = node.child_by_field_name("consequence");
         let alternative = node.child_by_field_name("alternative");
@@ -358,12 +369,14 @@ impl<'a> State<'a> {
             }
         }
         self.tainted = merged;
+        self.origins
+            .retain(|variable, _| self.tainted.contains(variable));
         self.touched.clear();
     }
 
     /// Loop handling: the body may run zero times, so after the loop keep the
     /// union of the entry state and the body state (may-be-tainted).
-    fn walk_loop(&mut self, node: AstNode<'_>) {
+    fn walk_loop(&mut self, node: AstNode<'a>) {
         let entry = self.tainted.clone();
         for child in node.children() {
             self.walk(child);
@@ -371,6 +384,8 @@ impl<'a> State<'a> {
         let body_state = std::mem::take(&mut self.tainted);
         self.tainted = entry;
         self.tainted.extend(body_state);
+        self.origins
+            .retain(|variable, _| self.tainted.contains(variable));
     }
 
     fn handle_local_declaration(
@@ -406,9 +421,13 @@ impl<'a> State<'a> {
             .map(String::from);
         self.touched.insert(name.clone());
         match value {
-            Some(value) => self.apply_assignment(&name, &value, chain),
+            Some(value) => {
+                let line = declarator.start_position().row + 1;
+                self.apply_assignment(&name, &value, chain, line)
+            }
             None => {
                 self.tainted.remove(&name);
+                self.origins.remove(&name);
             }
         }
     }
@@ -428,7 +447,8 @@ impl<'a> State<'a> {
         else {
             return;
         };
-        self.apply_assignment(&left, &right, chain);
+        let line = node.start_position().row + 1;
+        self.apply_assignment(&left, &right, chain, line);
 
         // Sink assignments (e.g. `el.innerHTML = userInput`, `document.body.innerHTML =
         // tainted`) are DOM XSS sinks even though they are not calls.
@@ -454,13 +474,34 @@ impl<'a> State<'a> {
             // return value) rather than a named local variable.
             tainted = "tainted expression".to_string();
         }
+        // Attribute the flow's entry point: the earliest recorded source line
+        // among the tainted variables reaching this sink. A direct
+        // source-in-sink call (`exec(req.getParameter(...))`) is its own
+        // origin; a taint returned by a callee stays unattributed (None).
+        let line = pos.row + 1;
+        let mut source_line = self
+            .origins
+            .iter()
+            .filter(|(variable, _)| contains_identifier(&text, variable))
+            .map(|(_, origin)| *origin)
+            .min();
+        if source_line.is_none()
+            && self
+                .config
+                .sources
+                .iter()
+                .any(|pattern| text.contains(pattern))
+        {
+            source_line = Some(line);
+        }
         self.findings.push(TaintFinding {
             start_byte: start,
             end_byte: node.end_byte(),
-            start_line: pos.row + 1,
+            start_line: line,
             start_column: pos.column + 1,
             tainted,
             sink: text,
+            source_line,
         });
     }
 
@@ -469,15 +510,45 @@ impl<'a> State<'a> {
     /// clears it. If the value is a sanitizer call, the target is explicitly
     /// marked clean. `chain` is the in-progress callee path: assignments inside
     /// a callee body must keep it, or a (mutually) recursive callee re-enters
-    /// its own analysis forever.
-    fn apply_assignment(&mut self, target: &str, value: &str, chain: &mut Vec<String>) {
+    /// its own analysis forever. `line` is the assignment site, recorded as the
+    /// taint origin when the value directly contains a source call.
+    fn apply_assignment(
+        &mut self,
+        target: &str,
+        value: &str,
+        chain: &mut Vec<String>,
+        line: usize,
+    ) {
         self.touched.insert(target.to_string());
         if self.is_sanitizer_call(value) {
             self.tainted.remove(target);
+            self.origins.remove(target);
         } else if self.expr_is_tainted(value, chain) {
             self.tainted.insert(target.to_string());
+            if self
+                .config
+                .sources
+                .iter()
+                .any(|pattern| value.contains(pattern))
+            {
+                self.origins.entry(target.to_string()).or_insert(line);
+            } else {
+                // The taint arrived via already-tainted variables; inherit the
+                // earliest origin among them so the flow stays attributable
+                // through chains like `id` (source) → `sql` (concatenation).
+                let inherited = self
+                    .tainted
+                    .iter()
+                    .filter(|variable| contains_identifier(value, variable))
+                    .filter_map(|variable| self.origins.get(variable).copied())
+                    .min();
+                if let Some(origin) = inherited {
+                    self.origins.entry(target.to_string()).or_insert(origin);
+                }
+            }
         } else {
             self.tainted.remove(target);
+            self.origins.remove(target);
         }
     }
 
@@ -589,8 +660,11 @@ impl<'a> State<'a> {
             })
             .unwrap_or_default();
         for (index, param) in params.iter().enumerate() {
+            // `continue`, not `break`: an untainted argument must not stop the
+            // binding of later arguments (f("const", tainted) must still taint
+            // the second parameter).
             if !arg_tainted.get(index).copied().unwrap_or(false) {
-                break;
+                continue;
             }
             if let Some(name) = param
                 .child_by_field_name("name")
@@ -599,6 +673,64 @@ impl<'a> State<'a> {
                 self.tainted.insert(name.to_string());
             }
         }
+    }
+
+    /// Taints the parameters of a Java method whose declaration carries one of
+    /// the rule's `param-annotations` (e.g. Spring `@RequestParam`). These
+    /// framework entry points are sources at method entry.
+    fn taint_annotated_params(&mut self, method: AstNode<'a>) {
+        let Some(parameters) = method.child_by_field_name("parameters") else {
+            return;
+        };
+        let entry_line = method.start_position().row + 1;
+        for param in parameters.children() {
+            let is_annotated = param
+                .child_by_field_name("modifiers") // Java grammar: modifiers field
+                .or_else(|| param.children().find(|child| child.kind() == "modifiers"))
+                .map(|modifiers| {
+                    modifiers.children().any(|child| {
+                        let text = child.text(self.source).unwrap_or_default();
+                        self.config
+                            .param_annotations
+                            .iter()
+                            .any(|annotation| text.contains(annotation))
+                    })
+                })
+                .unwrap_or(false);
+            if is_annotated {
+                if let Some(name) = param
+                    .child_by_field_name("name")
+                    .and_then(|n| n.text(self.source))
+                {
+                    self.tainted.insert(name.to_string());
+                    self.origins.entry(name.to_string()).or_insert(entry_line);
+                }
+            }
+        }
+    }
+
+    /// True when a sink call is a parameterized query: the query is a pure
+    /// string literal carrying placeholder markers and the tainted data is
+    /// passed as separate bind arguments — the recommended, safe form. Without
+    /// this guard the engine reported CRITICAL findings on exactly the fix it
+    /// recommends (`db.Query("SELECT ... WHERE id = ?", id)`).
+    fn parameterized_safe(&mut self, text: &str) -> bool {
+        let Some((_, args)) = parse_call(text) else {
+            return false;
+        };
+        let Some(first) = args.first() else {
+            return false;
+        };
+        let first = first.clone();
+        let trimmed = first.trim();
+        let is_pure_literal = trimmed.len() >= 2
+            && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+                || (trimmed.starts_with('\'') && trimmed.ends_with('\'')));
+        if !is_pure_literal || !query_has_placeholder(trimmed) {
+            return false;
+        }
+        // Any taint must live in the bind arguments, never in the query text.
+        !self.expr_is_tainted(&first, &mut Vec::new())
     }
 
     fn walk_for_returns(
@@ -652,7 +784,7 @@ impl<'a> State<'a> {
         };
 
         if self.is_sink(&text) {
-            if self.expr_is_tainted(&text, &mut Vec::new()) {
+            if self.expr_is_tainted(&text, &mut Vec::new()) && !self.parameterized_safe(&text) {
                 self.emit_finding(node, text);
             }
             return;
@@ -744,7 +876,7 @@ impl<'a> State<'a> {
         if call_kinds(self.language).contains(&node.kind()) {
             if let Some(text) = node.text(source).map(String::from) {
                 if self.is_sink(&text) {
-                    if self.expr_is_tainted(&text, chain) {
+                    if self.expr_is_tainted(&text, chain) && !self.parameterized_safe(&text) {
                         return Some(text);
                     }
                 } else if self.expr_is_tainted(&text, chain) {
@@ -935,4 +1067,17 @@ fn contains_identifier(text: &str, identifier: &str) -> bool {
 
 fn is_identifier_character(character: char) -> bool {
     character == '_' || character.is_ascii_alphanumeric()
+}
+
+/// Whether a query string literal uses parameter binding placeholders (`?`,
+/// `%s`/`%d`, `$1`-style positional markers, or MyBatis `#{}` binding), which
+/// makes separately-bound arguments safe.
+fn query_has_placeholder(literal: &str) -> bool {
+    literal.contains('?')
+        || literal.contains("%s")
+        || literal.contains("%d")
+        || literal.contains("#{")
+        || ["$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9"]
+            .iter()
+            .any(|marker| literal.contains(marker))
 }

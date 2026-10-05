@@ -53,3 +53,22 @@ jobs:
           target: ${{ matrix.target }}
           archive: hawk-$target
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  checksums:
+    name: publish SHA256SUMS
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets and publish checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          mkdir dist
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'hawk-*.tar.gz' --pattern 'hawk-*.zip' --dir dist
+          cd dist
+          sha256sum hawk-*.tar.gz hawk-*.zip > SHA256SUMS
+          gh release upload "$tag" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+          echo "SHA256SUMS:"; cat SHA256SUMS

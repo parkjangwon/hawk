@@ -1,4 +1,4 @@
 // ruleid: go.security.hardcoded-credentials
-apiKey := "AKIAIOSFODNN7EXAMPLE123"
+apiKey := "qK9wXf2mR7tZ4pLd"
 // ok: go.security.hardcoded-credentials
 password := "dummy_placeholder"
